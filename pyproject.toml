@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymagfem"
+version = "0.1.0"
+description = "Axisymmetric electromagnetic finite-element methods"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Till Piepenbrock" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "triangle>=20250106",
+    "pygmsh>=7.1",
+    "gmsh>=4.11",
+]
+
+[project.optional-dependencies]
+notebook = [
+    "jupyter>=1.0",
+    "matplotlib>=3.7",
+    "materialdatabase",
+]
+test = [
+    "pytest>=7.4",
+]
+dev = [
+    "jupyter>=1.0",
+    "matplotlib>=3.7",
+    "materialdatabase",
+    "pytest>=7.4",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["fem*", "model*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+target-version = "py310"

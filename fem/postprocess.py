@@ -1,0 +1,496 @@
+"""Post-processing for axisymmetric magnetostatic FEM solutions."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+import numpy as np
+
+from .litz import LitzLoss, litz_loss
+from .nonlinear import NonlinearCoreMaterial
+from .physics import complex_conductivity, core_electric_loss_density, core_magnetic_loss_density
+
+MU0 = 4e-7 * np.pi
+from .preprocess import AxisymmetricMesh
+
+
+@dataclass(frozen=True)
+class WindingLosses:
+    """Per-turn and total loss for one homogenized Litz winding."""
+
+    per_turn: tuple[LitzLoss, ...]
+
+    @property
+    def total(self) -> float:
+        """Return the total winding loss in watts."""
+        return float(sum(loss.total for loss in self.per_turn))
+
+    @property
+    def transport(self) -> float:
+        """Return the total transport/skin loss in watts."""
+        return float(sum(loss.transport for loss in self.per_turn))
+
+    @property
+    def proximity(self) -> float:
+        """Return the total proximity loss in watts."""
+        return float(sum(loss.proximity for loss in self.per_turn))
+
+
+def core_losses(
+    mesh: AxisymmetricMesh,
+    magnetic_field: np.ndarray,
+    frequency: float,
+    *,
+    relative_permeability: float = 1000.0,
+    loss_angle_deg: float = 0.0,
+    a_phi: np.ndarray | None = None,
+    conductivity: float = 0.0,
+    relative_permittivity: float = 0.0,
+    permittivity_loss_angle_deg: float = 0.0,
+    nonlinear_material: NonlinearCoreMaterial | None = None,
+) -> tuple[float, float, float]:
+    """Return magnetic, electrical, and total core loss in watts."""
+    from .physics import complex_relative_permeability
+
+    core_indices = np.flatnonzero(np.asarray(mesh.regions) == "core")
+    magnetic_values = np.zeros(len(mesh.triangles), dtype=float)
+    if nonlinear_material is not None:
+        b_values = (
+            np.linalg.norm(magnetic_flux_density(mesh, a_phi), axis=1)
+            if a_phi is not None
+            else np.zeros(len(mesh.triangles))
+        )
+        local_mu = nonlinear_material.relative_permeability_at(b_values)
+        magnetic_values[core_indices] = core_magnetic_loss_density(
+            magnetic_field[core_indices], MU0 * local_mu[core_indices], frequency
+        )
+    else:
+        magnetic_values[core_indices] = core_magnetic_loss_density(
+            magnetic_field[core_indices],
+            MU0 * complex_relative_permeability(relative_permeability, loss_angle_deg),
+            frequency,
+        )
+    electric_values = np.zeros(len(mesh.triangles), dtype=float)
+    if a_phi is not None and (nonlinear_material is not None or conductivity > 0.0):
+        conductivity_complex = (
+            nonlinear_material.conductivity
+            if nonlinear_material is not None
+            else complex_conductivity(
+                conductivity,
+                relative_permittivity,
+                permittivity_loss_angle_deg,
+                frequency,
+            )
+        )
+        element_a_phi = np.mean(a_phi[mesh.triangles[core_indices]], axis=1)
+        electric_field = -1j * 2.0 * np.pi * frequency * element_a_phi
+        electric_values[core_indices] = core_electric_loss_density(
+            electric_field, conductivity_complex
+        )
+    magnetic_total = 0.0
+    electric_total = 0.0
+    for element in np.flatnonzero(np.asarray(mesh.regions) == "core"):
+        nodes = mesh.triangles[element]
+        xy = mesh.points[nodes]
+        area = (
+            abs(
+                np.linalg.det(
+                    np.array(
+                        [
+                            [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                            [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                        ]
+                    )
+                )
+            )
+            / 2.0
+        )
+        volume_factor = 2.0 * np.pi * float(np.mean(xy[:, 0])) * area
+        magnetic_total += volume_factor * magnetic_values[element]
+        electric_total += volume_factor * electric_values[element]
+    return float(magnetic_total), float(electric_total), float(magnetic_total + electric_total)
+
+
+def core_loss(*args, **kwargs) -> float:
+    """Backward-compatible total core-loss wrapper."""
+    return core_losses(*args, **kwargs)[2]
+
+
+def winding_copper_losses(
+    mesh: AxisymmetricMesh,
+    current_densities: Mapping[str, np.ndarray],
+    *,
+    conductivity: float = 58e6,
+    conductor_names: list[str] | None = None,
+) -> WindingLosses:
+    """Return classical solid-conductor loss for each turn and the winding."""
+    if conductivity <= 0.0:
+        raise ValueError("conductivity must be positive")
+    names = conductor_names or [
+        f"conductor_{index}" for index in range(len(mesh.conductor_regions or {}))
+    ]
+    losses = []
+    for name in names:
+        density = np.asarray(current_densities[name])
+        loss = 0.0
+        for element in np.asarray(mesh.conductor_regions[name], dtype=int):
+            nodes = mesh.triangles[element]
+            xy = mesh.points[nodes]
+            area = (
+                abs(
+                    np.linalg.det(
+                        np.array(
+                            [
+                                [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                                [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                            ]
+                        )
+                    )
+                )
+                / 2.0
+            )
+            radius = float(np.mean(xy[:, 0]))
+            loss += 0.5 * 2.0 * np.pi * radius * area * abs(density[element]) ** 2 / conductivity
+        losses.append(LitzLoss(float(loss), 0.0))
+    return WindingLosses(tuple(losses))
+
+
+def winding_litz_losses(
+    mesh: AxisymmetricMesh,
+    current_densities: Mapping[str, np.ndarray],
+    magnetic_field: np.ndarray,
+    frequency: float,
+    *,
+    conductor_names: list[str] | None = None,
+    strand_diameter: float,
+    fill_factor: float,
+    conductivity: float = 58e6,
+) -> WindingLosses:
+    """Return Meeker Litz losses for each turn and the complete winding.
+
+    ``conductor_names`` determines the turn order. When omitted, all mesh
+    conductors are evaluated in mesh order. The returned object exposes
+    ``per_turn`` and aggregate ``total``, ``transport``, and ``proximity``
+    values in watts.
+    """
+    names = conductor_names or [
+        f"conductor_{index}" for index in range(len(mesh.conductor_regions or {}))
+    ]
+    losses = tuple(
+        litz_loss(
+            mesh,
+            current_densities,
+            magnetic_field,
+            name,
+            frequency,
+            strand_diameter=strand_diameter,
+            fill_factor=fill_factor,
+            conductivity=conductivity,
+        )
+        for name in names
+    )
+    return WindingLosses(losses)
+
+
+def magnetic_field_intensity(
+    mesh: AxisymmetricMesh,
+    a_phi: np.ndarray,
+    relative_permeability: Mapping[str, float | complex] | None = None,
+    nonlinear_material=None,
+) -> np.ndarray:
+    """Return element-centre magnetic field intensity ``(H_r, H_z)`` in A/m."""
+    relative_permeability_by_region = {
+        "core": 1000.0,
+        "air": 1.0,
+        "winding": 1.0,
+    }
+    if relative_permeability:
+        relative_permeability_by_region.update(relative_permeability)
+    flux_density = magnetic_flux_density(mesh, a_phi)
+    result = np.empty(flux_density.shape, dtype=np.result_type(flux_density, np.complex128))
+    for index, region in enumerate(mesh.regions):
+        if str(region) == "core" and nonlinear_material is not None:
+            mu = nonlinear_material.absolute_permeability_at(
+                np.array([np.linalg.norm(flux_density[index])])
+            )[0]
+        else:
+            mu = MU0 * complex(relative_permeability_by_region.get(str(region), 1.0))
+        result[index] = flux_density[index] / mu
+    return result
+
+
+def magnetic_flux_density(mesh: AxisymmetricMesh, a_phi: np.ndarray) -> np.ndarray:
+    """Return element-centre ``(B_r, B_z)`` values in tesla."""
+    a_phi = np.asarray(a_phi)
+    if a_phi.shape != (len(mesh.points),):
+        raise ValueError("a_phi must contain one value per mesh node")
+    result_dtype = np.result_type(a_phi.dtype, np.float64)
+    result = np.zeros((len(mesh.triangles), 2), dtype=result_dtype)
+    geometry = mesh._cache.get("flux_element_geometry")
+    if geometry is None:
+        geometry = []
+        for nodes in mesh.triangles:
+            xy = mesh.points[nodes]
+            det = np.linalg.det(
+                np.array(
+                    [
+                        [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                        [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                    ]
+                )
+            )
+            gradients = (
+                np.array(
+                    [
+                        [xy[1, 1] - xy[2, 1], xy[2, 1] - xy[0, 1], xy[0, 1] - xy[1, 1]],
+                        [xy[2, 0] - xy[1, 0], xy[0, 0] - xy[2, 0], xy[1, 0] - xy[0, 0]],
+                    ]
+                )
+                / det
+            )
+            geometry.append((nodes, gradients, max(float(xy[:, 0].mean()), 1e-12)))
+        mesh._cache["flux_element_geometry"] = geometry
+    for index, (nodes, gradients, radius) in enumerate(geometry):
+        result[index] = (
+            -gradients[1] @ a_phi[nodes],
+            gradients[0] @ a_phi[nodes] + np.mean(a_phi[nodes]) / radius,
+        )
+    return result
+
+
+def magnetic_flux_density_nodal(mesh: AxisymmetricMesh, a_phi: np.ndarray) -> np.ndarray:
+    """Return an area-weighted continuous nodal ``(B_r, B_z)`` field.
+
+    The P1 derivative is constant per triangle, so element values are
+    inherently discontinuous.  Averaging adjacent element-centre values at
+    shared nodes provides the continuous field used for visualization.
+    """
+    element_field = magnetic_flux_density(mesh, a_phi)
+    nodal = np.zeros((len(mesh.points), 2), dtype=element_field.dtype)
+    weights = np.zeros(len(mesh.points), dtype=float)
+    for element_index, nodes in enumerate(mesh.triangles):
+        xy = mesh.points[nodes]
+        area = (
+            abs(
+                np.linalg.det(
+                    np.array(
+                        [
+                            [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                            [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                        ]
+                    )
+                )
+            )
+            / 2.0
+        )
+        nodal[nodes] += area * element_field[element_index]
+        weights[nodes] += area
+    if np.any(weights == 0.0):
+        raise ValueError("mesh contains an isolated node")
+    return nodal / weights[:, None]
+
+
+def magnetic_energy(
+    mesh: AxisymmetricMesh, a_phi: np.ndarray, current_density: float | Mapping[str, float]
+) -> float:
+    """Return stored magnetic energy in joules."""
+    if np.iscomplexobj(a_phi):
+        raise ValueError("magnetic_energy requires a real magnetostatic solution")
+    currents = _currents(current_density)
+    energy = 0.0
+    for nodes, region in zip(mesh.triangles, mesh.regions):
+        xy = mesh.points[nodes]
+        area = (
+            abs(
+                np.linalg.det(
+                    np.array(
+                        [
+                            [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                            [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                        ]
+                    )
+                )
+            )
+            / 2
+        )
+        energy += np.pi * area * np.mean(xy[:, 0]) * currents[str(region)] * np.mean(a_phi[nodes])
+    return float(energy)
+
+
+def _currents(current_density: float | Mapping[str, float]) -> dict[str, float]:
+    currents = {"core": 0.0, "air": 0.0, "winding": 0.0}
+    if isinstance(current_density, Mapping):
+        currents.update(current_density)
+    else:
+        currents["winding"] = float(current_density)
+    return currents
+
+
+def inductance(
+    mesh: AxisymmetricMesh,
+    a_phi: np.ndarray,
+    current: float,
+    current_density: float | Mapping[str, float],
+) -> float:
+    """Return energy-based inductance in henries."""
+    if current == 0:
+        raise ValueError("current must be non-zero")
+    return 2.0 * magnetic_energy(mesh, a_phi, current_density) / current**2
+
+
+def winding_flux_linkage(
+    mesh: AxisymmetricMesh, a_phi: np.ndarray, current: float, turns: int | None = None
+) -> float | complex:
+    """Estimate total winding flux linkage by averaging flux over each conductor."""
+    if current == 0:
+        raise ValueError("current must be non-zero")
+    values = []
+    signs = mesh.geometry.get("conductor_signs", [1.0] * len(mesh.conductor_regions or {}))
+    for index, item in enumerate(mesh.geometry["p_cond_center_1"]):
+        center = np.asarray(item, dtype=float)
+        elements = np.asarray(
+            (mesh.conductor_regions or {}).get(f"conductor_{index}", []), dtype=int
+        )
+        if len(elements) == 0:
+            distances = np.linalg.norm(mesh.points - center[:2], axis=1)
+            local = np.array([np.argmin(distances)])
+            values.append(2.0 * np.pi * center[0] * a_phi[local[0]])
+            continue
+        weighted_flux = 0.0
+        area_total = 0.0
+        for element in elements:
+            nodes = mesh.triangles[element]
+            xy = mesh.points[nodes]
+            area = (
+                abs(
+                    np.linalg.det(
+                        np.array(
+                            [
+                                [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                                [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                            ]
+                        )
+                    )
+                )
+                / 2.0
+            )
+            weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
+            area_total += area
+        values.append(float(signs[index]) * weighted_flux / area_total)
+    linkage = np.sum(values)
+    return linkage if turns is None else linkage * float(turns) / max(len(values), 1)
+
+
+def winding_flux_linkages(
+    mesh: AxisymmetricMesh,
+    a_phi: np.ndarray,
+) -> dict[str, complex]:
+    """Return signed flux linkage grouped by winding name."""
+    names = mesh.geometry.get("conductor_windings", [])
+    centers = mesh.geometry.get("p_cond_center_1", [])
+    signs = mesh.geometry.get("conductor_signs", [1.0] * len(centers))
+    result: dict[str, complex] = {}
+    for index, center in enumerate(centers):
+        winding = names[index] if index < len(names) else "winding"
+        elements = np.asarray(
+            (mesh.conductor_regions or {}).get(f"conductor_{index}", []),
+            dtype=int,
+        )
+        if len(elements) == 0:
+            local = np.argmin(np.linalg.norm(mesh.points - np.asarray(center), axis=1))
+            flux = 2.0 * np.pi * float(center[0]) * a_phi[local]
+        else:
+            weighted_flux = 0.0j
+            area_total = 0.0
+            for element in elements:
+                nodes = mesh.triangles[element]
+                xy = mesh.points[nodes]
+                area = (
+                    abs(
+                        np.linalg.det(
+                            np.array(
+                                [
+                                    [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                                    [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                                ]
+                            )
+                        )
+                    )
+                    / 2.0
+                )
+                weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
+                area_total += area
+            flux = weighted_flux / area_total
+        result[winding] = result.get(winding, 0.0j) + float(signs[index]) * flux
+    return result
+
+
+def winding_voltages(
+    mesh: AxisymmetricMesh,
+    a_phi: np.ndarray,
+    densities: Mapping[str, np.ndarray],
+    current: complex,
+    frequency: float,
+    conductivity: float = 58e6,
+    phasor_convention: str = "cosine",
+) -> dict[str, complex]:
+    """Return the per-conductor ring-source voltages.
+
+    The source voltage is reconstructed from the constitutive relation used by
+    the frequency-domain solver. It already contains both the resistive and
+    induced contributions; adding an induced-voltage estimate to a loss-based
+    resistance drop would count the field contribution twice.
+    """
+    if current == 0:
+        raise ValueError("current must be non-zero")
+    if frequency < 0 or conductivity <= 0:
+        raise ValueError("frequency must be non-negative and conductivity must be positive")
+    if phasor_convention not in {"cosine", "sine"}:
+        raise ValueError("phasor_convention must be 'cosine' or 'sine'")
+    signs = mesh.geometry.get("conductor_signs", [1.0] * len(mesh.conductor_regions or {}))
+    result: dict[str, complex] = {}
+    omega_sign = 1j if phasor_convention == "cosine" else -1j
+    from .frequency_solver import _TRIANGLE_QUADRATURE
+
+    for index, center in enumerate(mesh.geometry["p_cond_center_1"]):
+        name = f"conductor_{index}"
+        elements = np.asarray((mesh.conductor_regions or {}).get(name, []), dtype=int)
+        density = densities.get(name)
+        if density is None or len(elements) == 0:
+            raise ValueError(f"missing current density for {name}")
+        area_total = 0.0
+        voltage = 0.0j
+        center = np.asarray(center, dtype=float)
+        for element in elements:
+            nodes = mesh.triangles[element]
+            xy = mesh.points[nodes]
+            area = (
+                abs(
+                    np.linalg.det(
+                        np.array(
+                            [
+                                [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
+                                [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
+                            ]
+                        )
+                    )
+                )
+                / 2.0
+            )
+            inverse_radius = sum(
+                weight / max(float(np.dot(barycentric, xy[:, 0])), 1e-12)
+                for weight, barycentric in _TRIANGLE_QUADRATURE
+            )
+            voltage += area * (
+                2.0
+                * np.pi
+                / inverse_radius
+                * (
+                    density[element] / conductivity
+                    + omega_sign * 2.0 * np.pi * float(frequency) * np.mean(a_phi[nodes])
+                )
+            )
+            area_total += area
+        result[name] = float(signs[index]) * voltage / area_total
+    return result

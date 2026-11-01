@@ -1,0 +1,5 @@
+numpy>=1.24
+scipy>=1.10
+triangle>=20250106
+pygmsh>=7.1
+gmsh>=4.11

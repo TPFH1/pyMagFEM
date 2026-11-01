@@ -1,0 +1,17 @@
+# Project configuration for local development and example runs.
+[project]
+name = "pymagfem"
+package = "fem"
+python = ">=3.10"
+
+[solver]
+quadrature_surface_order = 12
+quadrature_disk_order = 20
+azimuthal_order = 48
+
+[case_study]
+notebook = "notebooks/example_inductor_minimal.ipynb"
+
+[tooling]
+test_command = "python -m pytest"
+notebook_extra = "notebook"

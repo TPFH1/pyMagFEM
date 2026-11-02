@@ -38,6 +38,17 @@ python -m pip install -e ".[dev]"
 
 ## Quick start
 
+Import the solver and model APIs through the public package namespace:
+
+```python
+import pymagfem
+from pymagfem import fem, model
+```
+
+The existing top-level `fem` and `model` imports remain supported.
+After updating an existing editable installation, rerun
+`python -m pip install -e .` and restart any running notebook kernels.
+
 The repository includes executable examples in [`notebooks/`](notebooks/).
 Start Jupyter from the repository root:
 

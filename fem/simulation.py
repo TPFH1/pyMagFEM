@@ -1,6 +1,8 @@
 """High-level frequency-domain simulation API."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -214,6 +216,19 @@ class FrequencyDomainResult:
             losses[winding.name] = WindingLosses(tuple(per_turn))
         return losses
 
+    def loss_summary(self) -> dict[str, float]:
+        """Return winding transport/proximity and core losses in watts."""
+        windings = self.winding_losses()
+        summary = {}
+        for name, losses in windings.items():
+            summary[f"{name}_copper"] = losses.total
+            summary[f"{name}_transport"] = losses.transport
+            summary[f"{name}_proximity"] = losses.proximity
+        magnetic, electrical, core_total = self.core_losses()
+        summary.update(core_magnetic=magnetic, core_electrical=electrical)
+        summary["total"] = sum(losses.total for losses in windings.values()) + core_total
+        return summary
+
     def winding_flux_linkages(self) -> dict[str, complex]:
         return winding_flux_linkages(self.mesh, self.a_phi)
 
@@ -313,6 +328,34 @@ class FrequencyDomainResult:
         if current == 0:
             raise ValueError("excitation current must be non-zero")
         return complex(current)
+
+def solve_operating_point(
+    model: FEMModel,
+    *,
+    frequency_hz: float,
+    currents: Mapping[str, complex],
+    mesh: AxisymmetricMesh | None = None,
+) -> FrequencyDomainResult:
+    """Solve terminal-current phasors on an independent model copy.
+
+    Phasor amplitudes follow the model convention (peak amplitudes for loss
+    calculations). Missing circuits are open; unknown circuits are rejected.
+    Geometry and materials are unchanged, allowing reuse of an existing mesh.
+    """
+    if not np.isfinite(frequency_hz) or frequency_hz < 0:
+        raise ValueError("frequency_hz must be finite and non-negative")
+    circuits = {circuit.name for circuit in model.circuits}
+    circuits.update(winding.circuit for winding in model.windings)
+    if set(currents) - circuits:
+        raise ValueError("currents reference unknown circuits")
+    values = {name: complex(currents.get(name, 0.0)) for name in circuits}
+    if not values or not all(np.isfinite(value) for value in values.values()):
+        raise ValueError("currents must contain finite phasors for a model with circuits")
+    component = deepcopy(model)
+    component.excitation.frequency = frequency_hz
+    component.excitation.circuits = values
+    return FrequencyDomainSimulation(component, mesh=mesh).solve()
+
 
 @dataclass
 class FrequencyDomainSimulation:

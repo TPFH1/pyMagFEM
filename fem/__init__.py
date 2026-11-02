@@ -30,6 +30,7 @@ from .physics import (
 from .plot import PhysicalField, plot_mesh, plot_physical_field
 from .postprocess import (
                           WindingLosses,
+                          TransformerEquivalent,
                           core_loss,
                           core_losses,
                           inductance,
@@ -43,10 +44,11 @@ from .postprocess import (
                           winding_flux_linkages,
                           winding_litz_losses,
                           winding_voltages,
+                          transformer_equivalent,
 )
 from .preprocess import AxisymmetricMesh, build_mesh, load_geometry, mesh_from_json
 from .report import SimulationResultReport, build_result_report
-from .simulation import FrequencyDomainResult, FrequencyDomainSimulation
+from .simulation import FrequencyDomainResult, FrequencyDomainSimulation, solve_operating_point
 from .solver import (
                           conductor_area,
                           conductor_current,
@@ -67,6 +69,9 @@ __all__ = [
                           "PhysicalField",
                           "SimulationResultReport",
                           "WindingLosses",
+                          "TransformerEquivalent",
+                          "transformer_equivalent",
+                          "solve_operating_point",
                           "absolute_to_relative_permeability",
                           "average_abs_current_density",
                           "build_mesh",

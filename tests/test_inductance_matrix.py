@@ -74,3 +74,73 @@ def test_inductance_matrix_rejects_shared_circuits(matrix_case):
     component.windings[1].circuit = component.windings[0].circuit
     with pytest.raises(ValueError, match="distinct"):
         inductance_matrix(component)
+
+
+def test_transformer_equivalent_reconstructs_matrix_and_refers_external_inductance():
+    from fem import transformer_equivalent
+
+    matrix = np.array([[100 - 2j, 18 - 0.3j], [18.2 - 0.4j, 4 - 0.1j]]) * 1e-6
+    original = matrix.copy()
+    equivalent = transformer_equivalent(matrix, secondary_series_inductance_h=100e-9)
+    assert equivalent.turns_ratio == pytest.approx(5.0)
+    assert equivalent.external_inductance_referred_primary_h == pytest.approx(2.5e-6)
+    reconstructed = np.array([
+        [equivalent.leakage_primary_h + equivalent.magnetizing_primary_h,
+         equivalent.magnetizing_primary_h / equivalent.turns_ratio],
+        [equivalent.magnetizing_primary_h / equivalent.turns_ratio,
+         equivalent.leakage_secondary_h + equivalent.magnetizing_primary_h / equivalent.turns_ratio**2],
+    ])
+    np.testing.assert_allclose(reconstructed, (matrix.real + matrix.real.T) / 2)
+    np.testing.assert_array_equal(matrix, original)
+    assert equivalent.total_leakage_referred_primary_h == pytest.approx(
+        equivalent.transformer_leakage_referred_primary_h + 2.5e-6
+    )
+    assert equivalent.to_dict()["turns_ratio"] == pytest.approx(5)
+
+
+@pytest.mark.parametrize("matrix", [np.eye(3), [[0, 1], [1, 1]], [[1, 0], [0, np.nan]]])
+def test_transformer_equivalent_rejects_invalid_matrices(matrix):
+    from fem import transformer_equivalent
+
+    with pytest.raises(ValueError):
+        transformer_equivalent(matrix)
+
+
+def test_operating_point_preserves_original_excitation(matrix_case):
+    from fem import solve_operating_point
+
+    component, shared_mesh, _, calls = matrix_case
+    original = deepcopy(component)
+    solve_operating_point(component, mesh=shared_mesh, frequency_hz=250e3,
+                          currents={"primary_circuit": 1 + 2j, "secondary_circuit": -7j})
+    assert component == original
+    assert calls == [{"primary_circuit": 1 + 2j, "secondary_circuit": -7j}]
+
+
+@pytest.mark.parametrize("external", [-1.0, float("nan"), float("inf")])
+def test_transformer_equivalent_rejects_invalid_external_inductance(external):
+    from fem import transformer_equivalent
+
+    with pytest.raises(ValueError, match="secondary_series"):
+        transformer_equivalent(np.eye(2), secondary_series_inductance_h=external)
+
+
+def test_operating_point_applies_frequency_and_opens_missing_circuits(matrix_case, monkeypatch):
+    from fem import solve_operating_point
+
+    component, shared_mesh, _, _ = matrix_case
+    original = deepcopy(component)
+    monkeypatch.setattr(FrequencyDomainSimulation, "solve",
+                        lambda simulation: SimpleNamespace(model=simulation.model))
+    result = solve_operating_point(component, mesh=shared_mesh, frequency_hz=250e3,
+                                   currents={"primary_circuit": 1 + 2j})
+    assert result.model.excitation.frequency == 250e3
+    assert result.model.excitation.circuits == {"primary_circuit": 1 + 2j, "secondary_circuit": 0j}
+    assert component == original
+
+
+def test_operating_point_rejects_unknown_circuits(matrix_case):
+    from fem import solve_operating_point
+
+    with pytest.raises(ValueError, match="unknown"):
+        solve_operating_point(matrix_case[0], frequency_hz=1e3, currents={"missing": 1.0})

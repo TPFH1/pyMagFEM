@@ -83,6 +83,54 @@ def test_transformer_report_separates_losses_and_skips_zero_current_inductance(m
     assert np.isclose(losses["secondary"].total, 4.0 * losses["primary"].total)
 
 
+def test_loss_summary_does_not_double_count_transport_and_proximity(monkeypatch):
+    from fem import FrequencyDomainResult, LitzLoss, WindingLosses
+
+    result = FrequencyDomainResult.from_solution(FEMModel(), _mesh(), np.zeros(5), {})
+    monkeypatch.setattr(FrequencyDomainResult, "winding_losses", lambda self: {
+        "primary": WindingLosses((LitzLoss(1.0, 2.0),)),
+        "secondary": WindingLosses((LitzLoss(3.0, 4.0),)),
+    })
+    monkeypatch.setattr(FrequencyDomainResult, "core_losses", lambda self: (5.0, 6.0, 11.0))
+    summary = result.loss_summary()
+    assert summary["primary_copper"] == 3.0
+    assert summary["secondary_copper"] == 7.0
+    assert summary["primary_transport"] == 1.0
+    assert summary["primary_proximity"] == 2.0
+    assert summary["total"] == 21.0
+
+
+def test_conductor_interior_growth_rejects_invalid_factors():
+    import pytest
+
+    for growth in (0.5, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="conductor_max_growth"):
+            build_mesh(FEMModel(), conductor_max_growth=growth)
+
+
+def test_conductor_interior_mesh_growth_is_limited_without_refining_core():
+    from model import InsulationSpec, RadialWindingSpec, build_concentric_model
+
+    conductor_radius = 0.002
+    boundary_size = 0.00025
+    component = build_concentric_model(
+        core_area=100e-6,
+        windings=(RadialWindingSpec("primary", RoundConductor("copper", radius=conductor_radius), 1),),
+        insulation=InsulationSpec(0.001, 0.001, 0.001, 0.001),
+    )
+    mesh = build_mesh(component, max_size=0.003, conductor_geometry_size=boundary_size,
+                      physics_adaptive=False, conductor_max_growth=1.5)
+    centers = mesh.points[mesh.triangles].mean(axis=1)
+    conductor_center = component.windings[0].turns[0].center
+    central_elements = np.linalg.norm(centers - conductor_center, axis=1) < conductor_radius / 2
+    edge_lengths = np.linalg.norm(
+        mesh.points[mesh.triangles] - np.roll(mesh.points[mesh.triangles], 1, axis=1), axis=2,
+    )
+    assert central_elements.any()
+    assert np.quantile(edge_lengths[central_elements], 0.95) < 1.8 * boundary_size
+    assert edge_lengths[np.asarray(mesh.regions) == "core"].max() > 3 * boundary_size
+
+
 def test_permeability_conversion_round_trip():
     relative = np.array([1.0, 1500.0, 2.5 + 0.1j])
     absolute = relative_to_absolute_permeability(relative)

@@ -142,6 +142,64 @@ permeability consistently.
 
 ## Development
 
+### Conductor Mesh Grading
+
+Use `conductor_max_growth` to limit conductor-interior target sizes relative
+to the conductor-boundary geometry size:
+
+```python
+mesh = fem.build_mesh(
+	component,
+	conductor_geometry_size=boundary_size_m,
+	conductor_max_growth=1.5,
+)
+```
+
+The cap is restricted to conductor surfaces and does not impose that size
+on the core or surrounding air. A factor of 1 requests a nearly uniform
+conductor mesh; 1.5 permits moderate interior growth. This controls target
+sizes, not a strict upper bound on every triangle edge. The default `None`
+preserves the previous grading. The same keyword is accepted by
+`simulation.create_mesh()` and `mesh_from_json()`.
+
+### Higher-Level Model and Analysis APIs
+
+`model.RadialWindingSpec` describes one single-column winding, including
+electrical turns, parallel paths, and `bottom`, `center`, or `top` alignment.
+Pass windings in inside-to-outside order to `model.build_concentric_model`:
+
+```python
+component = model.build_concentric_model(
+	core_area=core_area_m2,
+	windings=winding_specs,
+	insulation=insulation,
+	air_gap_length=air_gap_length_m,
+)
+```
+
+The factory derives the window from the physical bundle stacks and builds
+an equal-area centre/outer-leg core with equal minimum yoke cross section.
+Dimensions, materials, and excitation frequency belong to the caller.
+
+```python
+equivalent = fem.transformer_equivalent(
+	matrix_h, secondary_series_inductance_h=external_secondary_inductance_h,
+)
+equivalent.print()
+parameters = equivalent.to_dict()
+result = fem.solve_operating_point(
+	component, mesh=mesh, frequency_hz=frequency_hz, currents=terminal_phasors,
+)
+losses_w = result.loss_summary()
+```
+
+The inductive T-model uses `sqrt(L11/L22)` and a primary-side magnetizing
+branch. Its external-secondary series term is referred by the ratio squared.
+Operating-point solves copy the model instead of overwriting identification
+inputs. Current phasors use peak amplitudes for loss calculations; loss
+summaries include winding transport/proximity and core contributions without
+double-counting their totals.
+
 Run the test suite with:
 
 ```bash

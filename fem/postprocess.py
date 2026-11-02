@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -488,6 +488,97 @@ def inductance_matrix(
     if not np.isfinite(matrix).all():
         raise ValueError("inductance matrix contains non-finite values")
     return (matrix, results) if return_results else matrix
+
+
+@dataclass(frozen=True)
+class TransformerEquivalent:
+    """Inductive two-winding T-equivalent with primary-side magnetizing branch."""
+
+    turns_ratio: float
+    coupling_coefficient: float
+    magnetizing_primary_h: float
+    leakage_primary_h: float
+    leakage_secondary_h: float
+    secondary_series_inductance_h: float
+    reciprocity_error_h: float
+
+    @property
+    def leakage_secondary_referred_primary_h(self) -> float:
+        return self.turns_ratio**2 * self.leakage_secondary_h
+
+    @property
+    def transformer_leakage_referred_primary_h(self) -> float:
+        return self.leakage_primary_h + self.leakage_secondary_referred_primary_h
+
+    @property
+    def external_inductance_referred_primary_h(self) -> float:
+        return self.turns_ratio**2 * self.secondary_series_inductance_h
+
+    @property
+    def total_leakage_referred_primary_h(self) -> float:
+        return (self.transformer_leakage_referred_primary_h
+                + self.external_inductance_referred_primary_h)
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            **asdict(self),
+            "leakage_secondary_referred_primary_h": self.leakage_secondary_referred_primary_h,
+            "transformer_leakage_referred_primary_h": self.transformer_leakage_referred_primary_h,
+            "external_inductance_referred_primary_h": self.external_inductance_referred_primary_h,
+            "total_leakage_referred_primary_h": self.total_leakage_referred_primary_h,
+        }
+
+    def print(self) -> None:
+        print(f"Ideal turns ratio: {self.turns_ratio:.6f}:1")
+        print(f"Coupling coefficient: {self.coupling_coefficient:.8f}")
+        for label, value in (
+            ("Primary magnetizing inductance", self.magnetizing_primary_h),
+            ("Primary series leakage", self.leakage_primary_h),
+            ("Secondary series leakage", self.leakage_secondary_h),
+            ("Transformer-only leakage referred to primary", self.transformer_leakage_referred_primary_h),
+            ("External secondary series inductance", self.secondary_series_inductance_h),
+            ("External inductance referred to primary", self.external_inductance_referred_primary_h),
+            ("Total series leakage referred to primary", self.total_leakage_referred_primary_h),
+        ):
+            print(f"{label}: {value * 1e6:.6f} uH")
+        if abs(self.coupling_coefficient) > 1:
+            print("Warning: |k| > 1; check matrix passivity and mesh convergence.")
+
+
+def transformer_equivalent(
+    matrix_h: np.ndarray,
+    *,
+    secondary_series_inductance_h: float = 0.0,
+) -> TransformerEquivalent:
+    """Extract an inductive T-model from a primary/secondary 2x2 matrix in H.
+
+    Uses real self-inductances, the mean real mutual term, and
+    n=sqrt(L11/L22). The input matrix is not changed. Losses remain in the
+    original complex matrix and are not represented by this inductive model.
+    Optional external secondary series inductance is referred by n squared;
+    it does not change the extracted ratio or intrinsic winding parameters.
+    """
+    matrix = np.asarray(matrix_h, dtype=complex)
+    if matrix.shape != (2, 2) or not np.isfinite(matrix).all():
+        raise ValueError("matrix_h must be a finite 2x2 inductance matrix")
+    external = float(secondary_series_inductance_h)
+    if not np.isfinite(external) or external < 0:
+        raise ValueError("secondary_series_inductance_h must be finite and non-negative")
+    l11, l22 = float(matrix[0, 0].real), float(matrix[1, 1].real)
+    if l11 <= 0 or l22 <= 0:
+        raise ValueError("self-inductances must be positive")
+    mutual = float((matrix[0, 1].real + matrix[1, 0].real) / 2.0)
+    ratio = float(np.sqrt(l11 / l22))
+    magnetizing = ratio * mutual
+    return TransformerEquivalent(
+        turns_ratio=ratio,
+        coupling_coefficient=mutual / float(np.sqrt(l11 * l22)),
+        magnetizing_primary_h=magnetizing,
+        leakage_primary_h=l11 - magnetizing,
+        leakage_secondary_h=l22 - mutual / ratio,
+        secondary_series_inductance_h=external,
+        reciprocity_error_h=float(abs(matrix[0, 1] - matrix[1, 0])),
+    )
 
 
 def winding_voltages(

@@ -5,6 +5,43 @@ import pytest
 from model import Constructor, CoreSpec, InsulationSpec, RoundConductor
 
 
+@pytest.mark.parametrize("core_area", [0.0, -1.0, float("nan")])
+def test_concentric_factory_rejects_invalid_core_area(core_area):
+    from model import build_concentric_model
+
+    with pytest.raises(ValueError, match="core_area"):
+        build_concentric_model(core_area=core_area, windings=(), insulation=InsulationSpec())
+
+
+@pytest.mark.parametrize("alignment,bottom", [("bottom", 0.001), ("center", 0.0085), ("top", 0.016)])
+def test_concentric_factory_preserves_core_and_winding_geometry(alignment, bottom):
+    from math import pi
+
+    from model import RadialWindingSpec, build_concentric_model
+
+    component = build_concentric_model(
+        core_area=455.58e-6,
+        windings=(
+            RadialWindingSpec("primary", RoundConductor("primary", radius=0.0011), 14),
+            RadialWindingSpec("secondary", RoundConductor("secondary", radius=0.00165),
+                              2, parallel_paths=3, alignment=alignment),
+        ),
+        insulation=InsulationSpec(0.001, 0.001, 0.001, 0.001, 0.0005),
+        air_gap_length=0.00005,
+    )
+    window = component.geometry.winding_window.corners
+    outer = component.geometry.core.corners
+    assert window[2][1] - window[0][1] == pytest.approx(0.0393)
+    assert window[1][0] - window[0][0] == pytest.approx(0.008)
+    assert pi * window[0][0]**2 == pytest.approx(455.58e-6)
+    assert pi * (outer[1][0]**2 - window[1][0]**2) == pytest.approx(455.58e-6)
+    assert 2 * pi * window[0][0] * (outer[2][1] - window[2][1]) == pytest.approx(455.58e-6)
+    assert [len(winding.turns) for winding in component.windings] == [14, 6]
+    assert [circuit.turns for circuit in component.circuits] == [14, 2]
+    assert (component.windings[1].turns[0].center[1] - 0.00165 - window[0][1]
+            == pytest.approx(bottom))
+
+
 @pytest.mark.parametrize("parallel_paths", [0, -1, 1.5, True])
 def test_parallel_paths_must_be_positive_integer(parallel_paths):
     from model import Winding

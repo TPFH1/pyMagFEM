@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import Enum
+from typing import Literal
 
 import numpy as np
 from matplotlib.colors import LogNorm
@@ -105,7 +106,7 @@ def plot_physical_field(
     domains: str | Sequence[str] | None = None,
     ax=None,
     levels: int = 20,
-    color_scale: str = "linear",
+    color_scale: Literal["linear", "log"] = "linear",
     length_unit: str = "mm",
 ):
     """Plot a scalar physical field while preserving the full mesh extent.
@@ -113,6 +114,10 @@ def plot_physical_field(
     ``domains`` may contain ``"air"``, ``"winding"``, and ``"core"``.
     Omitted domains show the complete model. Loss-density fields use peak
     phasors and return W/m³.
+    ``color_scale="linear"`` (default) uses linear colour normalization.
+    ``color_scale="log"`` uses logarithmic colour normalization, masking
+    non-positive values and requiring at least one positive value. This
+    affects field colours and the colourbar, not the spatial axis scales.
     """
     try:
         import matplotlib.pyplot as plt

@@ -90,6 +90,63 @@ def test_permeability_conversion_round_trip():
     assert np.allclose(absolute_to_relative_permeability(absolute), relative)
 
 
+def test_high_level_litz_solver_respects_parallel_current_share():
+    from fem import FrequencyDomainSimulation
+
+    mesh = _mesh()
+    mesh.geometry["conductor_windings"] = ["secondary"]
+    mesh.geometry["conductor_circuits"] = ["secondary"]
+    mesh.geometry["conductor_signs"] = [0.25]
+    component = FEMModel(
+        conductors=[Conductor(
+            "litz", construction="litz", radius=0.4, strands=100, strand_diameter=0.01,
+        )],
+        windings=[Winding(
+            "secondary", circuit="secondary", conductor="litz",
+            turns=[TurnPlacement([1.5, 0.5], "litz", "secondary", current_sign=0.25)],
+        )],
+    )
+    component.excitation.frequency = 10_000.0
+    component.excitation.circuits = {"secondary": 4.0}
+    result = FrequencyDomainSimulation(component, mesh=mesh).solve()
+    assert np.isclose(integrated_current(mesh, result.current_densities["conductor_0"], "conductor_0"), 1.0)
+    assert set(result.litz_properties) == {"conductor_0"}
+    assert result.turn_voltages == {}
+    np.testing.assert_allclose(
+        result.magnetic_field_intensity(),
+        result.magnetic_flux_density() / result.litz_properties["conductor_0"].absolute_permeability,
+    )
+
+
+def test_result_plot_exposes_and_forwards_color_scale():
+    from inspect import Parameter, signature
+
+    import pytest
+    from matplotlib.colors import LogNorm
+    from matplotlib.figure import Figure
+
+    from fem import FrequencyDomainResult, PhysicalField
+
+    parameter = signature(FrequencyDomainResult.plot_physical_field).parameters["color_scale"]
+    assert parameter.kind is Parameter.KEYWORD_ONLY
+    assert parameter.default == "linear"
+    result = FrequencyDomainResult.from_solution(
+        FEMModel(), _mesh(), np.zeros(5),
+        {"conductor_0": np.array([1.0, 2.0, 4.0, 8.0])},
+    )
+    for scale in ("linear", "log"):
+        figure = Figure()
+        axis = figure.subplots()
+        result.plot_physical_field(PhysicalField.J, ax=axis, color_scale=scale)
+        assert isinstance(axis.collections[0].norm, LogNorm) == (scale == "log")
+        assert axis.get_xscale() == axis.get_yscale() == "linear"
+    with pytest.raises(ValueError, match="color_scale"):
+        result.plot_physical_field(PhysicalField.J, color_scale="invalid")
+    result.current_densities["conductor_0"][:] = 0.0
+    with pytest.raises(ValueError, match="positive value"):
+        result.plot_physical_field(PhysicalField.J, color_scale="log")
+
+
 def test_magnetic_field_uses_relative_permeability_once():
     mesh = _mesh()
     a_phi = np.array([0.0, 0.1, 0.2, 0.3, 0.15])
@@ -221,6 +278,30 @@ def test_winding_litz_losses_returns_per_turn_and_total():
     assert losses.proximity > 0.0
 
 
+def test_parallel_litz_report_uses_litz_losses():
+    from fem import FrequencyDomainSimulation
+    from model import Constructor, CoreSpec, InsulationSpec
+
+    core = CoreSpec("core", "core", 0.025, 0.025, 0.012, 0.020, 0.020)
+    winding = Constructor.place_winding(
+        core=core, insulation=InsulationSpec(w2w=0.0005), name="secondary",
+        conductor=RoundConductor("litz", radius=0.00165, construction="litz",
+                                 strands=600, strand_diameter=0.0001),
+        circuit="secondary", turns=1, radial_columns=1, parallel_paths=4,
+    )
+    component = Constructor(core, (winding,)).build()
+    component.excitation.frequency = 200e3
+    component.excitation.circuits = {"secondary": 4.0}
+    simulation = FrequencyDomainSimulation(component)
+    simulation.create_mesh(max_size=0.003)
+    result = simulation.solve()
+    report = result.report().to_dict()
+    losses = report["losses"]["windings"]["secondary"]
+    assert losses["litz"]["total_w"] == result.winding_losses()["secondary"].total
+    assert not losses.get("solid")
+    assert all(item["current_error_a"] < 1e-8 for item in report["conductors"].values())
+
+
 def test_complex_conductivity_includes_dielectric_loss_angle():
     value = complex_conductivity(0.6, 50_000.0, 25.0, 270_000.0)
     assert np.isclose(
@@ -323,6 +404,44 @@ def test_litz_conductor_derives_fill_factor_from_strands():
     )
     expected = 150.0 * (100e-6 / 1.3e-3) ** 2
     assert np.isclose(conductor.fill_factor, expected)
+
+
+def test_parallel_current_targets_and_flux_linkages():
+    mesh = _mesh()
+    mesh.geometry["conductor_windings"] = ["secondary"]
+    field, _ = solve_frequency_domain(mesh, frequency=1e4, currents=4.0)
+    reference = winding_flux_linkages(mesh, field)["secondary"]
+    mesh.geometry["conductor_current_fractions"] = [0.25]
+    for currents in (4.0, {"secondary": 4.0}):
+        _, densities = solve_frequency_domain(mesh, frequency=1e4, currents=currents)
+        assert np.isclose(integrated_current(mesh, densities["conductor_0"], "conductor_0"), 1.0)
+    assert np.isclose(winding_flux_linkages(mesh, field)["secondary"], reference / 4.0)
+
+
+def test_parallel_litz_simulation_splits_terminal_current():
+    from fem import FrequencyDomainSimulation
+    from model import Constructor, CoreSpec, InsulationSpec
+
+    core = CoreSpec("core", "core", 0.025, 0.025, 0.012, 0.020, 0.020)
+    winding = Constructor.place_winding(
+        core=core, insulation=InsulationSpec(w2w=0.0005), name="secondary",
+        conductor=RoundConductor("litz", radius=0.00165, construction="litz",
+                                 strands=600, strand_diameter=0.0001),
+        circuit="secondary", turns=1, radial_columns=1, parallel_paths=4,
+    )
+    component = Constructor(core, (winding,)).build()
+    component.excitation.frequency = 200e3
+    component.excitation.circuits = {"secondary": 4.0}
+    simulation = FrequencyDomainSimulation(component)
+    mesh = simulation.create_mesh(max_size=0.003)
+    result = simulation.solve()
+    assert len(result.litz_properties) == 4
+    for name, density in result.current_densities.items():
+        assert np.isclose(integrated_current(mesh, density, name), 1.0)
+    losses = result.winding_losses()["secondary"]
+    assert len(losses.per_turn) == 4
+    assert losses.transport > 0.0
+    assert losses.proximity > 0.0
 
 
 def test_domainc_block_comparison_shows_radial_basis_difference():

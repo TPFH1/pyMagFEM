@@ -95,6 +95,14 @@ class Winding:
     conductor: str = "conductor_1"
     circuit: str = "circuit_1"
     metadata: dict[str, Any] = field(default_factory=dict)
+    parallel_paths: int = 1
+
+    def __post_init__(self) -> None:
+        if (isinstance(self.parallel_paths, bool) or not isinstance(self.parallel_paths, int)
+                or self.parallel_paths < 1):
+            raise ValueError("parallel_paths must be a positive integer")
+        if len(self.turns) % self.parallel_paths:
+            raise ValueError("physical conductor count must be divisible by parallel_paths")
 
 
 @dataclass
@@ -174,6 +182,7 @@ class FEMModel:
         winding_circuits = []
         turn_centers = []
         conductor_signs = []
+        conductor_current_fractions = []
         conductor_shapes = []
         conductor_widths = []
         conductor_heights = []
@@ -204,6 +213,7 @@ class FEMModel:
                 winding_names.append(winding.name)
                 winding_circuits.append(turn.circuit or winding.circuit)
                 conductor_signs.append(float(turn.current_sign))
+                conductor_current_fractions.append(1.0 / winding.parallel_paths)
         return {
             "core_type": self.geometry.core.extra.get("core_type", "Single"),
             "p_outer": self.geometry.core.corners,
@@ -213,6 +223,7 @@ class FEMModel:
             "lengths_air_gap": [float((g.size or [0, 0])[1]) for g in gaps],
             "p_cond_center_1": turn_centers,
             "conductor_signs": conductor_signs,
+            "conductor_current_fractions": conductor_current_fractions,
             "conductor_windings": winding_names,
             "conductor_circuits": winding_circuits,
             "radius_cond_1": radius,
@@ -293,7 +304,7 @@ def normalize(source: str | Path | Mapping[str, Any] | FEMModel) -> FEMModel:
             for x in data.get("materials", [])
         ]
         model.conductors = [Conductor(str(x["name"]), **{k: x[k] for k in ("shape", "construction", "radius", "width", "height", "strands", "strand_diameter", "material") if k in x}, metadata=dict(x.get("metadata", {}))) for x in data.get("conductors", [])]
-        model.windings = [Winding(str(x["name"]), [TurnPlacement(list(t["center"]), t.get("conductor", "conductor_1"), t.get("circuit", "circuit_1"), float(t.get("current_sign", 1.0)), dict(t.get("metadata", {}))) for t in x.get("turns", [])], x.get("conductor", "conductor_1"), x.get("circuit", "circuit_1"), dict(x.get("metadata", {}))) for x in data.get("windings", [])]
+        model.windings = [Winding(str(x["name"]), [TurnPlacement(list(t["center"]), t.get("conductor", "conductor_1"), t.get("circuit", "circuit_1"), float(t.get("current_sign", 1.0)), dict(t.get("metadata", {}))) for t in x.get("turns", [])], x.get("conductor", "conductor_1"), x.get("circuit", "circuit_1"), dict(x.get("metadata", {})), parallel_paths=x.get("parallel_paths", 1)) for x in data.get("windings", [])]
         model.circuits = [Circuit(str(x["name"]), int(x.get("turns", 0)), float(x.get("current", 0.0)), x.get("voltage"), dict(x.get("metadata", {}))) for x in data.get("circuits", [])]
         model.metadata = Metadata(**{k: data.get("metadata", {}).get(k, getattr(Metadata(), k)) for k in ("name", "description", "author", "units")}, extra=dict(data.get("metadata", {}).get("extra", {})))
         model.excitation = Excitation(**{k: data.get("excitation", {}).get(k, getattr(Excitation(), k)) for k in ("type", "frequency", "phasor_convention", "time", "circuits")}, metadata=dict(data.get("excitation", {}).get("metadata", {})))

@@ -5,6 +5,38 @@ import pytest
 from model import Constructor, CoreSpec, InsulationSpec, RoundConductor
 
 
+@pytest.mark.parametrize("parallel_paths", [0, -1, 1.5, True])
+def test_parallel_paths_must_be_positive_integer(parallel_paths):
+    from model import Winding
+
+    with pytest.raises(ValueError, match="positive integer"):
+        Winding("secondary", parallel_paths=parallel_paths)
+
+
+def test_parallel_winding_keeps_electrical_turn_count():
+    from dataclasses import asdict
+
+    from model import normalize
+
+    core = CoreSpec("core", "core", 0.025, 0.025, 0.012, 0.020, 0.020)
+    winding = Constructor.place_winding(
+        core=core, insulation=InsulationSpec(w2w=0.0005), name="secondary",
+        conductor=RoundConductor("litz", radius=0.00165, construction="litz",
+                                 strands=600, strand_diameter=0.0001),
+        circuit="secondary", turns=2, radial_columns=1, parallel_paths=4,
+    )
+    component = Constructor(core, (winding,)).build()
+    assert winding.turns_count == 2
+    assert len(component.windings[0].turns) == 8
+    assert component.windings[0].parallel_paths == 4
+    assert component.circuits[0].turns == 2
+    geometry = component.legacy_geometry()
+    assert geometry["conductor_current_fractions"] == [0.25] * 8
+    restored = normalize(asdict(component))
+    assert restored.windings[0].parallel_paths == 4
+    assert restored.legacy_geometry()["conductor_current_fractions"] == [0.25] * 8
+
+
 @pytest.mark.parametrize("radial_offset", [0.0, 0.00285, 0.0031])
 def test_radial_transformer_winding_clearance(radial_offset):
     core = CoreSpec("core", "core", 0.019943733351606967, 0.018475,

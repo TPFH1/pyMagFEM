@@ -49,6 +49,28 @@ The existing top-level `fem` and `model` imports remain supported.
 After updating an existing editable installation, rerun
 `python -m pip install -e .` and restart any running notebook kernels.
 
+### Equal-Current Parallel Windings
+
+`Constructor.place_winding(..., turns=2, parallel_paths=4)` places eight
+physical conductor bundles representing two series turns and four ideal
+parallel paths. Excitation currents are terminal currents: each physical
+bundle carries one quarter of the winding current. Flux linkage is weighted
+by the same factor, so inductance matrices refer to the winding terminals.
+The model, JSON loader, solver, and reports preserve this distinction.
+The default `parallel_paths=1` retains series-winding behaviour.
+
+This assumes perfect equal sharing, not an electrical network solution for
+unequal branch currents or circulating currents. Physical bundle placements
+must be divisible by the parallel-path count.
+
+Litz wires use the existing `fem.litz` Meeker model. Specify `construction="litz"`,
+`strands`, and the bare `strand_diameter` on a `RoundConductor`. The high-level
+simulation derives each wire's fill factor from its strand and envelope areas.
+`result.winding_losses()` returns winding-level transport/skin and proximity
+losses, summing every physical bundle; `result.report()` uses the same losses.
+
+### Inductance Matrix
+
 For a constructed component, extract the complex inductance matrix in henries
 using one open-circuit excitation per winding:
 
@@ -71,6 +93,18 @@ matrix_h, cases = fem.inductance_matrix(
 )
 primary_driven_result = cases["primary"]
 ```
+
+Field plots accept an explicit colour scale on both the result method and
+the low-level plotting function:
+
+```python
+result.plot_physical_field(fem.PhysicalField.J, color_scale="linear")
+result.plot_physical_field(fem.PhysicalField.J, color_scale="log")
+```
+
+The default is `"linear"`. Logarithmic scaling applies to field colours and
+the colourbar, not the spatial axes. It masks non-positive values and requires
+at least one positive value.
 
 The repository includes executable examples in [`notebooks/`](notebooks/).
 Start Jupyter from the repository root:

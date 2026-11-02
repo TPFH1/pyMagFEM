@@ -1,14 +1,15 @@
 """High-level frequency-domain simulation API."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, Literal, cast
 
 import numpy as np
 
 from model import FEMModel
 
 from .frequency_solver import solve_frequency_domain
+from .litz import LitzProperties, meeker_litz_properties
 from .physics import complex_relative_permeability
 from .postprocess import (
     WindingLosses,
@@ -17,6 +18,7 @@ from .postprocess import (
     magnetic_flux_density,
     winding_copper_losses,
     winding_flux_linkages,
+    winding_litz_losses,
     winding_voltages,
 )
 from .preprocess import AxisymmetricMesh, build_mesh
@@ -99,6 +101,7 @@ class FrequencyDomainResult:
     conductivity: float
     relative_permeability: dict[str, complex]
     nonlinear_material: Any | None = None
+    litz_properties: dict[str, LitzProperties] = field(default_factory=dict)
 
     @classmethod
     def from_solution(
@@ -131,12 +134,18 @@ class FrequencyDomainResult:
         return magnetic_flux_density(self.mesh, self.a_phi)
 
     def magnetic_field_intensity(self) -> np.ndarray:
-        return magnetic_field_intensity(
+        field_intensity = magnetic_field_intensity(
             self.mesh,
             self.a_phi,
             relative_permeability=self.relative_permeability,
             nonlinear_material=self.nonlinear_material,
         )
+        if self.litz_properties:
+            flux_density = self.magnetic_flux_density()
+            for name, properties in self.litz_properties.items():
+                elements = self.mesh.conductor_regions[name]
+                field_intensity[elements] = flux_density[elements] / properties.absolute_permeability
+        return field_intensity
 
     def winding_copper_losses(self) -> WindingLosses:
         return winding_copper_losses(
@@ -171,6 +180,40 @@ class FrequencyDomainResult:
             ),
         )
 
+    def winding_losses(self) -> dict[str, WindingLosses]:
+        """Return physical bundle losses grouped by winding, including Litz effects.
+
+        Parallel paths are already included in the solved bundle currents.
+        Sum their losses; do not divide the resulting watts by the path count.
+        """
+        definitions = {conductor.name: conductor for conductor in self.model.conductors}
+        field_intensity = self.magnetic_field_intensity()
+        losses = {}
+        conductor_index = 0
+        for winding in self.model.windings:
+            per_turn = []
+            for turn in winding.turns:
+                definition = definitions.get(turn.conductor or winding.conductor)
+                name = f"conductor_{conductor_index}"
+                if definition is not None and definition.construction == "litz":
+                    fill_factor = definition.strands * (
+                        definition.strand_diameter / (2.0 * definition.radius)
+                    ) ** 2
+                    bundle_losses = winding_litz_losses(
+                        self.mesh, self.current_densities, field_intensity, self.frequency_hz,
+                        conductor_names=[name], strand_diameter=definition.strand_diameter,
+                        fill_factor=fill_factor, conductivity=self.conductivity,
+                    )
+                else:
+                    bundle_losses = winding_copper_losses(
+                        self.mesh, self.current_densities, conductivity=self.conductivity,
+                        conductor_names=[name],
+                    )
+                per_turn.extend(bundle_losses.per_turn)
+                conductor_index += 1
+            losses[winding.name] = WindingLosses(tuple(per_turn))
+        return losses
+
     def winding_flux_linkages(self) -> dict[str, complex]:
         return winding_flux_linkages(self.mesh, self.a_phi)
 
@@ -185,8 +228,21 @@ class FrequencyDomainResult:
             phasor_convention=self.model.excitation.phasor_convention,
         )
 
-    def plot_physical_field(self, field: Any, **kwargs: Any) -> Any:
-        """Plot a solved field without repeating mesh or result arguments."""
+    def plot_physical_field(
+        self,
+        field: Any,
+        *,
+        color_scale: Literal["linear", "log"] = "linear",
+        **kwargs: Any,
+    ) -> Any:
+        """Plot a solved field, filling in mesh and solved-field arguments.
+
+        ``color_scale="linear"`` is the default. Use ``color_scale="log"``
+        for logarithmic field colours and colourbar; non-positive values are
+        masked and at least one positive value is required. Spatial axes
+        remain linear. Other options are forwarded to
+        :func:`fem.plot.plot_physical_field`.
+        """
         from .plot import plot_physical_field
 
         kwargs.setdefault("a_phi", self.a_phi)
@@ -194,7 +250,7 @@ class FrequencyDomainResult:
         kwargs.setdefault("magnetic_field", self.magnetic_field_intensity())
         kwargs.setdefault("nonlinear_material", self.nonlinear_material)
         kwargs.setdefault("frequency", self.frequency_hz)
-        return plot_physical_field(self.mesh, field, **kwargs)
+        return plot_physical_field(self.mesh, field, color_scale=color_scale, **kwargs)
 
     def report(self):
         """Build the standard report using this result's model context."""
@@ -208,20 +264,15 @@ class FrequencyDomainResult:
             if complex(currents.get(name, 1.0)) != 0
         }
         solid_losses = {}
-        turn_offset = 0
+        litz_losses = {}
+        winding_losses = self.winding_losses()
+        definitions = {conductor.name: conductor for conductor in self.model.conductors}
         for winding in self.model.windings:
-            conductor_names = [
-                f"conductor_{index}"
-                for index in range(turn_offset, turn_offset + len(winding.turns))
-            ]
-            if conductor_names:
-                solid_losses[winding.name] = winding_copper_losses(
-                    self.mesh,
-                    self.current_densities,
-                    conductivity=self.conductivity,
-                    conductor_names=conductor_names,
-                )
-            turn_offset += len(winding.turns)
+            definition = definitions.get(winding.conductor)
+            target = (litz_losses if definition is not None
+                      and definition.construction == "litz" else solid_losses)
+            if winding.turns:
+                target[winding.name] = winding_losses[winding.name]
         if not self.model.windings:
             winding_name = next(iter(linkages), "winding")
             solid_losses[winding_name] = self.winding_copper_losses()
@@ -234,6 +285,7 @@ class FrequencyDomainResult:
             flux_density=self.magnetic_flux_density(),
             inductance_h=inductances,
             solid_losses=solid_losses,
+            litz_losses=litz_losses,
             core_losses={"core": self.core_losses()},
             turn_voltages=self.turn_voltages,
             terminal_voltages=self.winding_voltages(),
@@ -289,6 +341,39 @@ class FrequencyDomainSimulation:
         currents = self._currents()
         relative_permeability = _permeability_map(self.model)
         conductivity = _conductivity(self.model)
+        from .solver import conductor_area
+
+        definitions = {conductor.name: conductor for conductor in self.model.conductors}
+        current_modes = {}
+        fixed_current_density = {}
+        litz_properties = {}
+        conductor_index = 0
+        for winding in self.model.windings:
+            for turn in winding.turns:
+                definition = definitions.get(turn.conductor or winding.conductor)
+                if definition is not None and definition.construction == "litz":
+                    if (definition.radius is None or definition.radius <= 0
+                            or definition.strands is None or definition.strands <= 0
+                            or definition.strand_diameter is None):
+                        raise ValueError("Litz conductors require radius, strand count, and strand diameter")
+                    name = f"conductor_{conductor_index}"
+                    fill_factor = definition.strands * (
+                        definition.strand_diameter / (2.0 * definition.radius)
+                    ) ** 2
+                    litz_properties[name] = meeker_litz_properties(
+                        frequency,
+                        strand_diameter=definition.strand_diameter,
+                        fill_factor=fill_factor,
+                        conductivity=conductivity,
+                    )
+                    current_modes[name] = "fixed_current_density"
+                    circuit = turn.circuit or winding.circuit
+                    current = complex(currents.get(circuit, currents.get(winding.name, 0.0)))
+                    fixed_current_density[name] = (
+                        current * turn.current_sign
+                        / (winding.parallel_paths * conductor_area(mesh, conductor_index))
+                    )
+                conductor_index += 1
         solved = solve_frequency_domain(
             mesh,
             frequency=frequency,
@@ -297,6 +382,9 @@ class FrequencyDomainSimulation:
             conductivity=conductivity,
             phasor_convention=self.model.excitation.phasor_convention,
             return_voltages=True,
+            current_modes=current_modes,
+            fixed_current_density=fixed_current_density,
+            litz_properties=litz_properties,
         )
         a_phi, densities, voltages = cast(
             tuple[np.ndarray, dict[str, np.ndarray], dict[str, complex]],
@@ -311,4 +399,5 @@ class FrequencyDomainSimulation:
             frequency_hz=frequency,
             conductivity=conductivity,
             relative_permeability=relative_permeability,
+            litz_properties=litz_properties,
         )

@@ -165,6 +165,14 @@ class WindingSpec:
     circuit: str
     layers: tuple[WindingLayer, ...]
     current: float = 0.0
+    parallel_paths: int = 1
+
+    def __post_init__(self) -> None:
+        if (isinstance(self.parallel_paths, bool) or not isinstance(self.parallel_paths, int)
+                or self.parallel_paths < 1):
+            raise ValueError("parallel_paths must be a positive integer")
+        if sum(len(layer.radial_centers) for layer in self.layers) % self.parallel_paths:
+            raise ValueError("physical conductor count must be divisible by parallel_paths")
 
     def model_winding(self) -> ModelWinding:
         turns = [
@@ -177,11 +185,12 @@ class WindingSpec:
             turns=turns,
             conductor=self.conductor.name,
             circuit=self.circuit,
+            parallel_paths=self.parallel_paths,
         )
 
     @property
     def turns_count(self) -> int:
-        return sum(len(layer.radial_centers) for layer in self.layers)
+        return sum(len(layer.radial_centers) for layer in self.layers) // self.parallel_paths
 
 
 @dataclass(frozen=True)
@@ -297,13 +306,19 @@ class Constructor:
         current: float = 0.0,
         traversal: str = "inside2outside-bottom2top",
         serpentine: bool = True,
+        parallel_paths: int = 1,
     ) -> WindingSpec:
         """Place turns in a rectangular window using insulation clearances.
 
         ``traversal`` defines the first radial and axial directions. The
         optional serpentine traversal reverses the radial order on alternate
         axial rows, matching common layer-wound coils.
+        ``turns`` is the electrical series turn count. ``parallel_paths``
+        places that many equal-current physical bundles for each turn.
         """
+        if (isinstance(parallel_paths, bool) or not isinstance(parallel_paths, int)
+                or parallel_paths < 1):
+            raise ValueError("parallel_paths must be a positive integer")
         if turns <= 0 or radial_columns <= 0:
             raise ValueError("turns and radial_columns must be positive")
         if traversal not in {
@@ -315,7 +330,8 @@ class Constructor:
             raise ValueError(f"unsupported winding traversal: {traversal!r}")
         radial_forward = traversal.startswith("inside2outside")
         axial_forward = traversal.endswith("bottom2top")
-        rows = (turns + radial_columns - 1) // radial_columns
+        physical_turns = turns * parallel_paths
+        rows = (physical_turns + radial_columns - 1) // radial_columns
         radial_pitch = 2.0 * conductor.radial_half_width + insulation.w2w
         axial_pitch = conductor.height + insulation.w2w
         radial_start = (
@@ -340,7 +356,7 @@ class Constructor:
         if not axial_forward:
             axial_centers.reverse()
         layers: list[WindingLayer] = []
-        remaining = turns
+        remaining = physical_turns
         for row, z in enumerate(axial_centers):
             count = min(radial_columns, remaining)
             row_centers = radial_centers[:count]
@@ -354,7 +370,7 @@ class Constructor:
                 circuit,
             ))
             remaining -= count
-        result = WindingSpec(name, conductor, circuit, tuple(layers), current)
+        result = WindingSpec(name, conductor, circuit, tuple(layers), current, parallel_paths)
         probe = Constructor(
             core=core,
             windings=(result,),

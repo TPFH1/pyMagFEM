@@ -354,6 +354,7 @@ def winding_flux_linkage(
         raise ValueError("current must be non-zero")
     values = []
     signs = mesh.geometry.get("conductor_signs", [1.0] * len(mesh.conductor_regions or {}))
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(signs))
     for index, item in enumerate(mesh.geometry["p_cond_center_1"]):
         center = np.asarray(item, dtype=float)
         elements = np.asarray(
@@ -362,7 +363,8 @@ def winding_flux_linkage(
         if len(elements) == 0:
             distances = np.linalg.norm(mesh.points - center[:2], axis=1)
             local = np.array([np.argmin(distances)])
-            values.append(2.0 * np.pi * center[0] * a_phi[local[0]])
+            values.append(float(signs[index]) * float(fractions[index])
+                          * 2.0 * np.pi * center[0] * a_phi[local[0]])
             continue
         weighted_flux = 0.0
         area_total = 0.0
@@ -384,7 +386,7 @@ def winding_flux_linkage(
             )
             weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
             area_total += area
-        values.append(float(signs[index]) * weighted_flux / area_total)
+        values.append(float(signs[index]) * float(fractions[index]) * weighted_flux / area_total)
     linkage = np.sum(values)
     return linkage if turns is None else linkage * float(turns) / max(len(values), 1)
 
@@ -393,10 +395,11 @@ def winding_flux_linkages(
     mesh: AxisymmetricMesh,
     a_phi: np.ndarray,
 ) -> dict[str, complex]:
-    """Return signed flux linkage grouped by winding name."""
+    """Return signed terminal flux linkage, averaging equal-current parallel paths."""
     names = mesh.geometry.get("conductor_windings", [])
     centers = mesh.geometry.get("p_cond_center_1", [])
     signs = mesh.geometry.get("conductor_signs", [1.0] * len(centers))
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(centers))
     result: dict[str, complex] = {}
     for index, center in enumerate(centers):
         winding = names[index] if index < len(names) else "winding"
@@ -429,7 +432,8 @@ def winding_flux_linkages(
                 weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
                 area_total += area
             flux = weighted_flux / area_total
-        result[winding] = result.get(winding, 0.0j) + float(signs[index]) * flux
+        result[winding] = (result.get(winding, 0.0j)
+                   + float(signs[index]) * float(fractions[index]) * flux)
     return result
 
 

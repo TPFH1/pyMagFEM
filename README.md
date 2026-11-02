@@ -49,6 +49,29 @@ The existing top-level `fem` and `model` imports remain supported.
 After updating an existing editable installation, rerun
 `python -m pip install -e .` and restart any running notebook kernels.
 
+For a constructed component, extract the complex inductance matrix in henries
+using one open-circuit excitation per winding:
+
+```python
+matrix_h = fem.inductance_matrix(component)
+```
+
+Rows are linked windings and columns are driven windings, in model winding
+order by default. The model's frequency and materials are preserved, and all
+cases share a mesh. Windings must have distinct circuits. To reuse an existing
+mesh and retain the solved fields:
+
+```python
+matrix_h, cases = fem.inductance_matrix(
+	component,
+	mesh=mesh,
+	winding_order=["primary", "secondary"],
+	test_current=1.0,
+	return_results=True,
+)
+primary_driven_result = cases["primary"]
+```
+
 The repository includes executable examples in [`notebooks/`](notebooks/).
 Start Jupyter from the repository root:
 

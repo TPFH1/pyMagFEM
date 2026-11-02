@@ -205,8 +205,26 @@ class FrequencyDomainResult:
         inductances = {
             name: linkage / complex(currents.get(name, 1.0))
             for name, linkage in linkages.items()
+            if complex(currents.get(name, 1.0)) != 0
         }
-        winding_name = next(iter(linkages), "winding")
+        solid_losses = {}
+        turn_offset = 0
+        for winding in self.model.windings:
+            conductor_names = [
+                f"conductor_{index}"
+                for index in range(turn_offset, turn_offset + len(winding.turns))
+            ]
+            if conductor_names:
+                solid_losses[winding.name] = winding_copper_losses(
+                    self.mesh,
+                    self.current_densities,
+                    conductivity=self.conductivity,
+                    conductor_names=conductor_names,
+                )
+            turn_offset += len(winding.turns)
+        if not self.model.windings:
+            winding_name = next(iter(linkages), "winding")
+            solid_losses[winding_name] = self.winding_copper_losses()
         return build_result_report(
             self.model,
             self.mesh,
@@ -215,7 +233,7 @@ class FrequencyDomainResult:
             current_densities=self.current_densities,
             flux_density=self.magnetic_flux_density(),
             inductance_h=inductances,
-            solid_losses={winding_name: self.winding_copper_losses()},
+            solid_losses=solid_losses,
             core_losses={"core": self.core_losses()},
             turn_voltages=self.turn_voltages,
             terminal_voltages=self.winding_voltages(),

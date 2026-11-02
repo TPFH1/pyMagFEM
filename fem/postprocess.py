@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from model import FEMModel
+
+    from .simulation import FrequencyDomainResult
 
 from .litz import LitzLoss, litz_loss
 from .nonlinear import NonlinearCoreMaterial
@@ -424,6 +431,59 @@ def winding_flux_linkages(
             flux = weighted_flux / area_total
         result[winding] = result.get(winding, 0.0j) + float(signs[index]) * flux
     return result
+
+
+def inductance_matrix(
+    model: FEMModel,
+    *,
+    mesh: AxisymmetricMesh | None = None,
+    winding_order: list[str] | None = None,
+    test_current: float = 1.0,
+    return_results: bool = False,
+) -> np.ndarray | tuple[np.ndarray, dict[str, FrequencyDomainResult]]:
+    """Solve open-circuit basis excitations and return complex inductances in H.
+
+    Rows are linked windings and columns are excited windings, both in
+    ``winding_order`` (model winding order by default). Each column is the
+    flux-linkage vector divided by ``test_current`` with every other circuit
+    held at zero net current. Materials, frequency, and phasor convention come
+    from the model. The same mesh is reused and the input model is not mutated.
+
+    Windings must have distinct circuits. This is a linear frequency-domain
+    identification, not an incremental nonlinear inductance calculation.
+    With ``return_results=True``, also return solved cases keyed by driven
+    winding name. No reciprocity averaging is applied.
+    """
+    from .simulation import FrequencyDomainSimulation
+
+    if not np.isfinite(test_current) or test_current == 0:
+        raise ValueError("test_current must be finite and non-zero")
+    windings = {winding.name: winding for winding in model.windings}
+    if not windings or len(windings) != len(model.windings):
+        raise ValueError("model must contain uniquely named windings")
+    order = list(windings) if winding_order is None else list(winding_order)
+    if len(order) != len(windings) or set(order) != set(windings):
+        raise ValueError("winding_order must contain each model winding exactly once")
+    circuits = [windings[name].circuit for name in order]
+    if any(not circuit for circuit in circuits) or len(set(circuits)) != len(circuits):
+        raise ValueError("each winding must have a distinct, non-empty circuit")
+    if mesh is None:
+        mesh = FrequencyDomainSimulation(model).create_mesh()
+    matrix = np.empty((len(order), len(order)), dtype=complex)
+    results = {}
+    for column, driven_name in enumerate(order):
+        test_model = deepcopy(model)
+        test_model.excitation.circuits = {
+            circuit: test_current if circuit == windings[driven_name].circuit else 0.0
+            for circuit in circuits
+        }
+        result = FrequencyDomainSimulation(test_model, mesh=mesh).solve()
+        linkages = result.winding_flux_linkages()
+        matrix[:, column] = [linkages[name] / test_current for name in order]
+        results[driven_name] = result
+    if not np.isfinite(matrix).all():
+        raise ValueError("inductance matrix contains non-finite values")
+    return (matrix, results) if return_results else matrix
 
 
 def winding_voltages(

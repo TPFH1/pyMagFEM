@@ -7,7 +7,7 @@ then converts those specifications into the existing :class:`FEMModel` schema.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import combinations
 
 from .schema import (
     Circuit,
@@ -396,16 +396,25 @@ class Constructor:
             name: winding.conductor.height / 2.0
             for name, winding in winding_by_name.items()
         }
+        radial_half_width = {
+            name: winding.conductor.radial_half_width
+            for name, winding in winding_by_name.items()
+        }
         intervals = sorted(
             (
                 layer.z - height_by_winding[layer.winding],
                 layer.z + height_by_winding[layer.winding],
+                radius - radial_half_width[layer.winding],
+                radius + radial_half_width[layer.winding],
             )
             for layer in layers
+            for radius in layer.radial_centers
         )
         tolerance = 1e-12
-        for previous, current in pairwise(intervals):
-            if current[0] - previous[1] < self.insulation.w2w - tolerance:
+        for previous, current in combinations(intervals, 2):
+            axial_clearance = current[0] - previous[1]
+            radial_clearance = max(current[2] - previous[3], previous[2] - current[3])
+            if max(axial_clearance, radial_clearance) < self.insulation.w2w - tolerance:
                 raise ValueError("winding layers violate the winding-to-winding clearance")
         lower = min(
             layer.z - height_by_winding[layer.winding]

@@ -53,6 +53,36 @@ def _mesh():
     )
 
 
+def test_transformer_report_separates_losses_and_skips_zero_current_inductance(monkeypatch):
+    from fem.simulation import FrequencyDomainResult
+
+    mesh = _mesh()
+    mesh.conductor_regions["conductor_1"] = np.arange(4)
+    component = FEMModel(
+        windings=[
+            Winding("primary", turns=[TurnPlacement(center=[1.5, 0.5])]),
+            Winding("secondary", turns=[TurnPlacement(center=[1.5, 0.5])]),
+        ],
+    )
+    component.excitation.circuits = {"primary": 4.5, "secondary": 0.0}
+    result = FrequencyDomainResult.from_solution(
+        component, mesh, np.zeros(5),
+        {"conductor_0": np.ones(4), "conductor_1": np.full(4, 2.0)},
+    )
+    monkeypatch.setattr(
+        FrequencyDomainResult, "winding_flux_linkages",
+        lambda self: {"primary": 9e-6, "secondary": 9e-6},
+    )
+    monkeypatch.setattr(FrequencyDomainResult, "winding_voltages", lambda self: {})
+    monkeypatch.setattr("fem.report.build_result_report", lambda *args, **kwargs: kwargs)
+    report = result.report()
+    assert report["inductance_h"] == {"primary": 2e-6}
+    losses = report["solid_losses"]
+    assert set(losses) == {"primary", "secondary"}
+    assert len(losses["primary"].per_turn) == len(losses["secondary"].per_turn) == 1
+    assert np.isclose(losses["secondary"].total, 4.0 * losses["primary"].total)
+
+
 def test_permeability_conversion_round_trip():
     relative = np.array([1.0, 1500.0, 2.5 + 0.1j])
     absolute = relative_to_absolute_permeability(relative)

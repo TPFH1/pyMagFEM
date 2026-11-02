@@ -142,6 +142,35 @@ permeability consistently.
 
 ## Development
 
+### Winding Insulation Matrix
+
+`model.InsulationSpec` accepts an optional symmetric `w2w_matrix` in metres,
+ordered like the windings passed to the constructor or concentric factory:
+
+```python
+insulation = model.InsulationSpec(
+	c2w_left=core_clearance_m,
+	c2w_right=outer_clearance_m,
+	c2w_top=core_clearance_m,
+	c2w_bottom=core_clearance_m,
+	w2w_matrix=[
+		[ins_11, ins_12],
+		[ins_12, ins_22],
+	],
+)
+```
+
+`ins_11` and `ins_22` set physical bundle spacing within each winding.
+`ins_12` sets the primary-to-secondary envelope clearance. Diagonal values
+control axial pitch/stack height; adjacent off-diagonal values control radial
+spacing and window width. The constructor also validates pairwise clearances.
+The matrix must be finite, non-negative, square, symmetric, and match the
+winding count. Saved models record it and its winding order in core metadata.
+
+Without a matrix, scalar `w2w` remains supported and applies to all pairs.
+For `Constructor.place_winding` with a matrix, `winding_index` selects its
+diagonal; `build_concentric_model` selects the entries automatically.
+
 ### Conductor Mesh Grading
 
 Use `conductor_max_growth` to limit conductor-interior target sizes relative

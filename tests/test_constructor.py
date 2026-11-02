@@ -5,6 +5,42 @@ import pytest
 from model import Constructor, CoreSpec, InsulationSpec, RoundConductor
 
 
+def test_concentric_insulation_matrix_controls_diagonal_and_interwinding_gaps():
+    from dataclasses import asdict
+
+    from model import RadialWindingSpec, build_concentric_model, normalize
+
+    insulation = InsulationSpec(0.001, 0.001, 0.001, 0.001,
+                               w2w_matrix=[[0.0002, 0.0012], [0.0012, 0.0007]])
+    component = build_concentric_model(
+        core_area=100e-6,
+        windings=(
+            RadialWindingSpec("primary", RoundConductor("primary", radius=0.001), 3),
+            RadialWindingSpec("secondary", RoundConductor("secondary", radius=0.001), 2),
+        ),
+        insulation=insulation,
+    )
+    primary, secondary = component.windings
+    assert primary.turns[1].center[1] - primary.turns[0].center[1] == pytest.approx(0.0022)
+    assert secondary.turns[1].center[1] - secondary.turns[0].center[1] == pytest.approx(0.0027)
+    assert secondary.turns[0].center[0] - primary.turns[0].center[0] - 0.002 == pytest.approx(0.0012)
+    stored = component.geometry.core.extra["insulation_mm"]["w2w_matrix"]
+    assert stored == [[0.2, 1.2], [1.2, 0.7]]
+    assert normalize(asdict(component)).geometry.core.extra["insulation_mm"]["w2w_matrix"] == stored
+
+
+@pytest.mark.parametrize("matrix", [
+    [[0.001, 0.002], [0.003, 0.001]],
+    [[0.001, -0.001], [-0.001, 0.001]],
+    [[0.001], [0.001, 0.001]],
+    [[float("nan")]],
+    [],
+])
+def test_insulation_matrix_must_be_symmetric_square_finite_and_nonnegative(matrix):
+    with pytest.raises(ValueError):
+        InsulationSpec(w2w_matrix=matrix)
+
+
 @pytest.mark.parametrize("core_area", [0.0, -1.0, float("nan")])
 def test_concentric_factory_rejects_invalid_core_area(core_area):
     from model import build_concentric_model
@@ -14,7 +50,8 @@ def test_concentric_factory_rejects_invalid_core_area(core_area):
 
 
 @pytest.mark.parametrize("alignment,bottom", [("bottom", 0.001), ("center", 0.0085), ("top", 0.016)])
-def test_concentric_factory_preserves_core_and_winding_geometry(alignment, bottom):
+@pytest.mark.parametrize("use_matrix", [False, True])
+def test_concentric_factory_preserves_core_and_winding_geometry(alignment, bottom, use_matrix):
     from math import pi
 
     from model import RadialWindingSpec, build_concentric_model
@@ -26,7 +63,10 @@ def test_concentric_factory_preserves_core_and_winding_geometry(alignment, botto
             RadialWindingSpec("secondary", RoundConductor("secondary", radius=0.00165),
                               2, parallel_paths=3, alignment=alignment),
         ),
-        insulation=InsulationSpec(0.001, 0.001, 0.001, 0.001, 0.0005),
+        insulation=InsulationSpec(
+            0.001, 0.001, 0.001, 0.001, 0.0005,
+            w2w_matrix=[[0.0005, 0.0005], [0.0005, 0.0005]] if use_matrix else None,
+        ),
         air_gap_length=0.00005,
     )
     window = component.geometry.winding_window.corners
@@ -40,6 +80,43 @@ def test_concentric_factory_preserves_core_and_winding_geometry(alignment, botto
     assert [circuit.turns for circuit in component.circuits] == [14, 2]
     assert (component.windings[1].turns[0].center[1] - 0.00165 - window[0][1]
             == pytest.approx(bottom))
+
+
+def test_insulation_matrix_size_must_match_winding_count():
+    from model import RadialWindingSpec, build_concentric_model
+
+    with pytest.raises(ValueError, match="number of windings"):
+        build_concentric_model(
+            core_area=100e-6,
+            windings=(RadialWindingSpec("primary", RoundConductor("wire", radius=0.001), 1),),
+            insulation=InsulationSpec(w2w_matrix=[[0, 0.001], [0.001, 0]]),
+        )
+
+
+def test_constructor_enforces_offdiagonal_insulation_clearance():
+    core = CoreSpec("core", "core", 0.025, 0.025, 0.010, 0.020, 0.020)
+    wire = RoundConductor("wire", radius=0.001)
+    windings = tuple(
+        Constructor.place_winding(
+            core=core, insulation=InsulationSpec(c2w_left=radial_offset),
+            name=name, conductor=wire, circuit=name, turns=1, radial_columns=1,
+        )
+        for name, radial_offset in (("primary", 0.001), ("secondary", 0.0035))
+    )
+    with pytest.raises(ValueError, match="clearance"):
+        Constructor(core, windings, insulation=InsulationSpec(
+            w2w_matrix=[[0, 0.001], [0.001, 0]],
+        )).build()
+
+
+def test_place_winding_uses_selected_matrix_diagonal():
+    core = CoreSpec("core", "core", 0.025, 0.025, 0.010, 0.020, 0.020)
+    winding = Constructor.place_winding(
+        core=core, insulation=InsulationSpec(w2w_matrix=[[0.0002, 0.001], [0.001, 0.0007]]),
+        name="secondary", conductor=RoundConductor("wire", radius=0.001),
+        circuit="secondary", turns=2, radial_columns=1, winding_index=1,
+    )
+    assert winding.layers[1].z - winding.layers[0].z == pytest.approx(0.0027)
 
 
 @pytest.mark.parametrize("parallel_paths", [0, -1, 1.5, True])

@@ -249,7 +249,9 @@ def _region(data: Mapping[str, Any], default_name: str, material: str = "air") -
                   if data.get("corners", data.get("points")) else [],
                   center=[float(x) for x in data["center"]] if data.get("center") is not None else None,
                   size=[float(x) for x in data["size"]] if data.get("size") is not None else None,
-                  extra={k: v for k, v in data.items() if k not in {"name", "material", "corners", "points", "center", "size"}})
+                        extra={**dict(data.get("extra", {})),
+                                 **{k: v for k, v in data.items() if k not in
+                                     {"name", "material", "corners", "points", "center", "size", "extra"}}})
 
 
 def _from_legacy(data: Mapping[str, Any]) -> FEMModel:

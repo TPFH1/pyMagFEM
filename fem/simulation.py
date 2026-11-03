@@ -21,6 +21,8 @@ from .postprocess import (
     winding_copper_losses,
     winding_flux_linkages,
     winding_litz_losses,
+    winding_complex_powers,
+    winding_terminal_voltages,
     winding_voltages,
 )
 from .preprocess import AxisymmetricMesh, build_mesh
@@ -241,7 +243,26 @@ class FrequencyDomainResult:
             self.frequency_hz,
             conductivity=self.conductivity,
             phasor_convention=self.model.excitation.phasor_convention,
+            conductor_conductivities={
+                name: properties.conductivity
+                for name, properties in self.litz_properties.items()
+            },
         )
+
+    def winding_terminal_voltages(self) -> dict[str, complex]:
+        """Return terminal voltage phasors by winding, in the model references."""
+        return winding_terminal_voltages(self.mesh, self.winding_voltages())
+
+    def winding_complex_powers(self) -> dict[str, complex]:
+        """Return absorbed complex winding powers in VA for peak phasors."""
+        currents = self._currents()
+        winding_currents = {
+            winding.name: complex(
+                currents.get(winding.circuit, currents.get(winding.name, 0.0))
+            )
+            for winding in self.model.windings
+        }
+        return winding_complex_powers(self.winding_terminal_voltages(), winding_currents)
 
     def plot_physical_field(
         self,

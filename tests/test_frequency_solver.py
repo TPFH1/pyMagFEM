@@ -24,7 +24,9 @@ from fem import (
     solve_frequency_domain,
     total_litz_loss_density,
     winding_flux_linkages,
+    winding_complex_powers,
     winding_litz_losses,
+    winding_terminal_voltages,
     winding_voltages,
 )
 from fem.materials import relative_to_absolute_permeability
@@ -440,6 +442,62 @@ def test_terminal_voltage_has_resistive_and_inductive_parts():
     assert voltages["conductor_0"].real > 0.0
     assert np.isfinite(voltages["conductor_0"])
     assert np.isclose(voltages["conductor_0"], source_voltages["conductor_0"], rtol=1e-2)
+
+
+def test_litz_turn_voltage_uses_effective_conductor_conductivity():
+    mesh = _mesh()
+    field = np.zeros(5, dtype=complex)
+    densities = {"conductor_0": np.ones(4, dtype=complex)}
+    bulk_conductivity_voltage = winding_voltages(
+        mesh, field, densities, 1.0, 0.0, conductivity=10.0,
+    )["conductor_0"]
+    litz_conductivity_voltage = winding_voltages(
+        mesh,
+        field,
+        densities,
+        1.0,
+        0.0,
+        conductivity=10.0,
+        conductor_conductivities={"conductor_0": 5.0 + 1.0j},
+    )["conductor_0"]
+    assert np.isclose(
+        litz_conductivity_voltage,
+        bulk_conductivity_voltage * 10.0 / (5.0 + 1.0j),
+    )
+
+
+def test_winding_terminal_voltage_and_complex_power_for_parallel_paths(monkeypatch):
+    from fem import FrequencyDomainResult
+
+    mesh = _mesh()
+    mesh.geometry.update({
+        "p_cond_center_1": [[1.5, 0.5]] * 4,
+        "conductor_windings": ["secondary"] * 4,
+        "conductor_current_fractions": [0.5] * 4,
+    })
+    component = FEMModel(windings=[
+        Winding(
+            "secondary",
+            turns=[TurnPlacement(center=[1.5, 0.5]) for _ in range(4)],
+            parallel_paths=2,
+        ),
+    ])
+    component.excitation.circuits = {"circuit_1": 3.0 + 1.0j}
+    result = FrequencyDomainResult.from_solution(
+        component, mesh, np.zeros(5), {},
+    )
+    conductor_voltages = {
+        f"conductor_{index}": complex(index + 2.0) for index in range(4)
+    }
+    monkeypatch.setattr(result, "winding_voltages", lambda: conductor_voltages)
+
+    terminal_voltages = result.winding_terminal_voltages()
+    assert terminal_voltages == {"secondary": 7.0 + 0.0j}
+    assert result.winding_complex_powers() == {"secondary": 10.5 - 3.5j}
+    assert winding_terminal_voltages(mesh, conductor_voltages) == terminal_voltages
+    assert winding_complex_powers(terminal_voltages, {"secondary": 3.0 + 1.0j}) == {
+        "secondary": 10.5 - 3.5j,
+    }
 
 
 def test_litz_conductor_derives_fill_factor_from_strands():

@@ -40,9 +40,11 @@ from .postprocess import (
                           magnetic_flux_density,
                           magnetic_flux_density_nodal,
                           winding_copper_losses,
+                          winding_complex_powers,
                           winding_flux_linkage,
                           winding_flux_linkages,
                           winding_litz_losses,
+                          winding_terminal_voltages,
                           winding_voltages,
                           transformer_equivalent,
 )
@@ -114,8 +116,10 @@ __all__ = [
                           "solve_voltage_excitation",
                           "total_litz_loss_density",
                           "winding_copper_losses",
+                          "winding_complex_powers",
                           "winding_flux_linkage",
                           "winding_flux_linkages",
+                          "winding_terminal_voltages",
                           "winding_litz_losses",
                           "winding_voltages",
 ]

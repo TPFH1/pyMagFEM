@@ -589,13 +589,15 @@ def winding_voltages(
     frequency: float,
     conductivity: float = 58e6,
     phasor_convention: str = "cosine",
+    conductor_conductivities: Mapping[str, complex] | None = None,
 ) -> dict[str, complex]:
     """Return the per-conductor ring-source voltages.
 
     The source voltage is reconstructed from the constitutive relation used by
     the frequency-domain solver. It already contains both the resistive and
     induced contributions; adding an induced-voltage estimate to a loss-based
-    resistance drop would count the field contribution twice.
+    resistance drop would count the field contribution twice. Optional
+    per-conductor conductivities support homogenized conductor models.
     """
     if current == 0:
         raise ValueError("current must be non-zero")
@@ -610,6 +612,11 @@ def winding_voltages(
 
     for index, center in enumerate(mesh.geometry["p_cond_center_1"]):
         name = f"conductor_{index}"
+        conductor_conductivity = complex(
+            (conductor_conductivities or {}).get(name, conductivity)
+        )
+        if not np.isfinite(conductor_conductivity) or conductor_conductivity == 0.0:
+            raise ValueError(f"conductivity for {name} must be finite and non-zero")
         elements = np.asarray((mesh.conductor_regions or {}).get(name, []), dtype=int)
         density = densities.get(name)
         if density is None or len(elements) == 0:
@@ -642,10 +649,42 @@ def winding_voltages(
                 * np.pi
                 / inverse_radius
                 * (
-                    density[element] / conductivity
+                    density[element] / conductor_conductivity
                     + omega_sign * 2.0 * np.pi * float(frequency) * np.mean(a_phi[nodes])
                 )
             )
             area_total += area
         result[name] = float(signs[index]) * voltage / area_total
     return result
+
+
+def winding_terminal_voltages(
+    mesh: AxisymmetricMesh,
+    conductor_voltages: Mapping[str, complex],
+) -> dict[str, complex]:
+    """Sum polarity-aligned turn voltages, averaging ideal parallel paths."""
+    centers = mesh.geometry.get("p_cond_center_1", [])
+    windings = mesh.geometry.get("conductor_windings", [])
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(centers))
+    result: dict[str, complex] = {}
+    for index in range(len(centers)):
+        conductor_name = f"conductor_{index}"
+        if conductor_name not in conductor_voltages:
+            raise ValueError(f"missing voltage for {conductor_name}")
+        winding = windings[index] if index < len(windings) else "winding"
+        fraction = float(fractions[index]) if index < len(fractions) else 1.0
+        result[winding] = result.get(winding, 0.0j) + (
+            complex(conductor_voltages[conductor_name]) * fraction
+        )
+    return result
+
+
+def winding_complex_powers(
+    terminal_voltages: Mapping[str, complex],
+    terminal_currents: Mapping[str, complex],
+) -> dict[str, complex]:
+    """Return winding complex powers in VA from peak voltage/current phasors."""
+    return {
+        name: 0.5 * complex(voltage) * complex(terminal_currents.get(name, 0.0)).conjugate()
+        for name, voltage in terminal_voltages.items()
+    }

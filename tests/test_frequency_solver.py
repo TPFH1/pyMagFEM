@@ -35,6 +35,7 @@ from model import (
     Conductor,
     FEMModel,
     Geometry,
+    Material,
     Region,
     RoundConductor,
     TurnPlacement,
@@ -107,6 +108,7 @@ def test_analytical_dc_winding_resistances_sums_bundle_turns_and_parallel_paths(
 
     conductivity_s_per_m = 58e6
     component = FEMModel(
+        materials=[Material("copper", conductivity=conductivity_s_per_m)],
         conductors=[
             Conductor(
                 "litz",
@@ -130,7 +132,6 @@ def test_analytical_dc_winding_resistances_sums_bundle_turns_and_parallel_paths(
 
     resistance_ohm = analytical_dc_winding_resistances(
         component,
-        conductivity_s_per_m=conductivity_s_per_m,
     )
     copper_area_m2 = 10 * np.pi * 0.001**2 / 4.0
     expected_ohm = (2.0 * np.pi * (0.01 + 0.02)) / (
@@ -144,6 +145,7 @@ def test_analytical_dc_winding_resistances_requires_litz_data():
     from fem import analytical_dc_winding_resistances
 
     component = FEMModel(
+        materials=[Material("copper", conductivity=58e6)],
         conductors=[Conductor("copper", construction="solid", radius=0.001)],
         windings=[
             Winding(
@@ -154,7 +156,35 @@ def test_analytical_dc_winding_resistances_requires_litz_data():
         ],
     )
     with pytest.raises(ValueError, match="requires defined Litz strand data"):
-        analytical_dc_winding_resistances(component, conductivity_s_per_m=58e6)
+        analytical_dc_winding_resistances(component)
+
+
+def test_analytical_dc_winding_resistances_requires_material_conductivity():
+    import pytest
+
+    from fem import analytical_dc_winding_resistances
+
+    component = FEMModel(
+        materials=[Material("copper", conductivity=0.0)],
+        conductors=[
+            Conductor(
+                "litz",
+                construction="litz",
+                strands=10,
+                strand_diameter=0.001,
+                material="copper",
+            ),
+        ],
+        windings=[
+            Winding(
+                "primary",
+                conductor="litz",
+                turns=[TurnPlacement(center=[0.01, 0.0], conductor="litz")],
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="requires a material with finite, positive conductivity"):
+        analytical_dc_winding_resistances(component)
 
 
 def test_conductor_interior_growth_rejects_invalid_factors():

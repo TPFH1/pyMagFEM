@@ -82,6 +82,42 @@ def test_concentric_factory_preserves_core_and_winding_geometry(alignment, botto
             == pytest.approx(bottom))
 
 
+def test_vertical_layout_places_two_column_windings_above_and_below_gap():
+    from model import RadialWindingSpec, build_concentric_model
+
+    conductor = RoundConductor("wire", radius=0.001375)
+    component = build_concentric_model(
+        core_area=301.23e-6,
+        windings=(
+            RadialWindingSpec("primary", conductor, 8, radial_columns=2),
+            RadialWindingSpec(
+                "secondary", conductor, 2, parallel_paths=3, radial_columns=2,
+            ),
+        ),
+        insulation=InsulationSpec(
+            0.0019, 0.003, 0.0019, 0.0019,
+            w2w_matrix=[[0.0005, 0.001], [0.001, 0.0005]],
+        ),
+        winding_layout="vertical",
+    )
+
+    primary, secondary = component.windings
+    assert [len(winding.turns) for winding in component.windings] == [8, 6]
+    assert [circuit.turns for circuit in component.circuits] == [8, 2]
+    assert [winding.parallel_paths for winding in component.windings] == [1, 3]
+
+    primary_radii = sorted({turn.center[0] for turn in primary.turns})
+    secondary_radii = sorted({turn.center[0] for turn in secondary.turns})
+    assert len(primary_radii) == 2
+    assert secondary_radii == pytest.approx(primary_radii)
+    assert len({turn.center[1] for turn in primary.turns}) == 4
+    assert len({turn.center[1] for turn in secondary.turns}) == 3
+
+    primary_top = max(turn.center[1] for turn in primary.turns) + conductor.radius
+    secondary_bottom = min(turn.center[1] for turn in secondary.turns) - conductor.radius
+    assert secondary_bottom - primary_top == pytest.approx(0.001)
+
+
 def test_insulation_matrix_size_must_match_winding_count():
     from model import RadialWindingSpec, build_concentric_model
 

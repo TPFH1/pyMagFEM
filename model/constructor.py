@@ -560,7 +560,7 @@ TransformerConstructor = Constructor
 
 @dataclass(frozen=True)
 class RadialWindingSpec:
-    """One single-column winding in an inside-to-outside radial stack."""
+    """Winding specification with physical bundles arranged in radial columns."""
 
     name: str
     conductor: ConductorSpec
@@ -568,6 +568,7 @@ class RadialWindingSpec:
     parallel_paths: int = 1
     alignment: Literal["bottom", "center", "top"] = "center"
     current: float = 0.0
+    radial_columns: int = 1
 
     def __post_init__(self) -> None:
         for value in (self.turns, self.parallel_paths):
@@ -575,6 +576,11 @@ class RadialWindingSpec:
                 raise ValueError("turns and parallel_paths must be positive integers")
         if self.alignment not in {"bottom", "center", "top"}:
             raise ValueError("alignment must be 'bottom', 'center', or 'top'")
+        if (isinstance(self.radial_columns, bool) or not isinstance(self.radial_columns, int)
+                or self.radial_columns < 1):
+            raise ValueError("radial_columns must be a positive integer")
+        if self.radial_columns > self.turns * self.parallel_paths:
+            raise ValueError("radial_columns cannot exceed the physical bundle count")
 
 
 def build_concentric_model(
@@ -584,12 +590,15 @@ def build_concentric_model(
     insulation: InsulationSpec,
     air_gap_length: float = 0.0,
     name: str = "concentric magnetic component",
+    winding_layout: Literal["concentric", "vertical"] = "concentric",
 ) -> FEMModel:
-    """Size an equal-area axisymmetric core and place concentric windings.
+    """Size an equal-area axisymmetric core and place transformer windings.
 
-    All lengths are in metres, ``core_area`` in square metres. The tallest
-    single-column physical bundle stack sets window height. Windings are
-    ordered inside to outside; their alignment uses the insulated window.
+    All lengths are in metres, ``core_area`` in square metres. In the default
+    ``concentric`` layout, windings are ordered inside to outside. In ``vertical``
+    layout, exactly two windings are ordered bottom to top and share the same
+    radial origin; the off-diagonal insulation entry sets their axial gap. Each
+    winding's ``radial_columns`` controls its physical bundle arrangement.
     Centre and outer legs have ``core_area``; the yokes have this minimum
     radial-flux cross section at the centre-leg radius. Materials and
     excitation frequency are intentionally left to the caller.
@@ -598,24 +607,49 @@ def build_concentric_model(
         raise ValueError("core_area must be finite and positive")
     if not isfinite(air_gap_length) or air_gap_length < 0:
         raise ValueError("air_gap_length must be finite and non-negative")
+    if winding_layout not in {"concentric", "vertical"}:
+        raise ValueError("winding_layout must be 'concentric' or 'vertical'")
     if not windings or len({winding.name for winding in windings}) != len(windings):
         raise ValueError("windings must be non-empty and uniquely named")
+    if winding_layout == "vertical" and len(windings) != 2:
+        raise ValueError("vertical winding_layout requires exactly two windings")
     insulation.validate_winding_count(len(windings))
+    rows = [
+        (winding.turns * winding.parallel_paths + winding.radial_columns - 1)
+        // winding.radial_columns
+        for winding in windings
+    ]
     heights = [
-        winding.turns * winding.parallel_paths * winding.conductor.height
-        + (winding.turns * winding.parallel_paths - 1) * insulation.winding_clearance(index, index)
+        row_count * winding.conductor.height
+        + (row_count - 1) * insulation.winding_clearance(index, index)
+        for index, (winding, row_count) in enumerate(zip(windings, rows))
+    ]
+    radial_widths = [
+        winding.radial_columns * 2.0 * winding.conductor.radial_half_width
+        + (winding.radial_columns - 1) * insulation.winding_clearance(index, index)
         for index, winding in enumerate(windings)
     ]
     available_height = max(heights)
-    window_height = available_height + insulation.c2w_top + insulation.c2w_bottom
+    if winding_layout == "vertical":
+        vertical_gap = insulation.winding_clearance(0, 1)
+        window_height = (
+            sum(heights) + vertical_gap + insulation.c2w_top + insulation.c2w_bottom
+        )
+        radial_stack_width = max(radial_widths)
+        interwinding_gaps = 0.0
+    else:
+        window_height = available_height + insulation.c2w_top + insulation.c2w_bottom
+        radial_stack_width = sum(radial_widths)
+        interwinding_gaps = sum(
+            insulation.winding_clearance(index, index + 1)
+            for index in range(len(windings) - 1)
+        )
     if air_gap_length >= window_height:
         raise ValueError("air gap must be shorter than the winding window")
     center_radius = sqrt(core_area / pi)
     window_outer_radius = (
-        center_radius + insulation.c2w_left + insulation.c2w_right
-        + sum(2.0 * winding.conductor.radial_half_width for winding in windings)
-          + sum(insulation.winding_clearance(index, index + 1)
-              for index in range(len(windings) - 1))
+        center_radius + insulation.c2w_left + radial_stack_width
+        + interwinding_gaps + insulation.c2w_right
     )
     core = CoreSpec(
         "core", "core",
@@ -627,28 +661,50 @@ def build_concentric_model(
         core_type="Single",
     )
     placed = []
-    radial_clearance = insulation.c2w_left
-    for index, (winding, height) in enumerate(zip(windings, heights)):
-        spare_height = available_height - height
-        offset = {"bottom": 0.0, "center": spare_height / 2.0, "top": spare_height}[
-            winding.alignment
-        ]
-        local_insulation = InsulationSpec(
-            c2w_left=radial_clearance,
-            c2w_right=insulation.c2w_right,
-            c2w_bottom=insulation.c2w_bottom + offset,
-            c2w_top=insulation.c2w_top + spare_height - offset,
-            w2w=insulation.winding_clearance(index, index),
-        )
-        placed.append(Constructor.place_winding(
-            core=core, insulation=local_insulation, name=winding.name,
-            conductor=winding.conductor, circuit=winding.name,
-            turns=winding.turns, parallel_paths=winding.parallel_paths,
-            radial_columns=1, current=winding.current,
-        ))
-        radial_clearance += 2.0 * winding.conductor.radial_half_width
-        if index + 1 < len(windings):
-            radial_clearance += insulation.winding_clearance(index, index + 1)
+    if winding_layout == "vertical":
+        for index, winding in enumerate(windings):
+            bottom_offset = (
+                0.0 if index == 0 else heights[0] + vertical_gap
+            )
+            top_offset = (
+                heights[1] + vertical_gap if index == 0 else 0.0
+            )
+            local_insulation = InsulationSpec(
+                c2w_left=insulation.c2w_left,
+                c2w_right=insulation.c2w_right,
+                c2w_bottom=insulation.c2w_bottom + bottom_offset,
+                c2w_top=insulation.c2w_top + top_offset,
+                w2w=insulation.winding_clearance(index, index),
+            )
+            placed.append(Constructor.place_winding(
+                core=core, insulation=local_insulation, name=winding.name,
+                conductor=winding.conductor, circuit=winding.name,
+                turns=winding.turns, parallel_paths=winding.parallel_paths,
+                radial_columns=winding.radial_columns, current=winding.current,
+            ))
+    else:
+        radial_clearance = insulation.c2w_left
+        for index, (winding, height) in enumerate(zip(windings, heights)):
+            spare_height = available_height - height
+            offset = {"bottom": 0.0, "center": spare_height / 2.0, "top": spare_height}[
+                winding.alignment
+            ]
+            local_insulation = InsulationSpec(
+                c2w_left=radial_clearance,
+                c2w_right=insulation.c2w_right,
+                c2w_bottom=insulation.c2w_bottom + offset,
+                c2w_top=insulation.c2w_top + spare_height - offset,
+                w2w=insulation.winding_clearance(index, index),
+            )
+            placed.append(Constructor.place_winding(
+                core=core, insulation=local_insulation, name=winding.name,
+                conductor=winding.conductor, circuit=winding.name,
+                turns=winding.turns, parallel_paths=winding.parallel_paths,
+                radial_columns=winding.radial_columns, current=winding.current,
+            ))
+            radial_clearance += radial_widths[index]
+            if index + 1 < len(windings):
+                radial_clearance += insulation.winding_clearance(index, index + 1)
     gaps = ((AirGapSpec("center_gap", center_radius / 2.0, 0.0,
                         center_radius, air_gap_length),) if air_gap_length else ())
     return Constructor(core, tuple(placed), gaps, insulation, {"name": name}).build()

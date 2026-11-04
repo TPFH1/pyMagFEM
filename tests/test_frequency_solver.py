@@ -102,6 +102,61 @@ def test_loss_summary_does_not_double_count_transport_and_proximity(monkeypatch)
     assert summary["total"] == 21.0
 
 
+def test_analytical_dc_winding_resistances_sums_bundle_turns_and_parallel_paths():
+    from fem import analytical_dc_winding_resistances
+
+    conductivity_s_per_m = 58e6
+    component = FEMModel(
+        conductors=[
+            Conductor(
+                "litz",
+                construction="litz",
+                strands=10,
+                strand_diameter=0.001,
+            ),
+        ],
+        windings=[
+            Winding(
+                "primary",
+                conductor="litz",
+                parallel_paths=2,
+                turns=[
+                    TurnPlacement(center=[0.01, 0.0], conductor="litz"),
+                    TurnPlacement(center=[0.02, 0.0], conductor="litz"),
+                ],
+            ),
+        ],
+    )
+
+    resistance_ohm = analytical_dc_winding_resistances(
+        component,
+        conductivity_s_per_m=conductivity_s_per_m,
+    )
+    copper_area_m2 = 10 * np.pi * 0.001**2 / 4.0
+    expected_ohm = (2.0 * np.pi * (0.01 + 0.02)) / (
+        conductivity_s_per_m * copper_area_m2 * 2**2
+    )
+    assert np.isclose(resistance_ohm["primary"], expected_ohm)
+
+
+def test_analytical_dc_winding_resistances_requires_litz_data():
+    import pytest
+    from fem import analytical_dc_winding_resistances
+
+    component = FEMModel(
+        conductors=[Conductor("copper", construction="solid", radius=0.001)],
+        windings=[
+            Winding(
+                "primary",
+                conductor="copper",
+                turns=[TurnPlacement(center=[0.01, 0.0], conductor="copper")],
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="requires defined Litz strand data"):
+        analytical_dc_winding_resistances(component, conductivity_s_per_m=58e6)
+
+
 def test_conductor_interior_growth_rejects_invalid_factors():
     import pytest
 

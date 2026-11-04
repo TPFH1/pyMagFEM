@@ -163,6 +163,55 @@ def winding_copper_losses(
     return WindingLosses(tuple(losses))
 
 
+def analytical_dc_winding_resistances(
+    component: FEMModel,
+    *,
+    conductivity_s_per_m: float,
+) -> dict[str, float]:
+    """Estimate terminal DC resistance for each Litz winding in ohms.
+
+    The estimate sums each physical bundle-turn circumference using its strand
+    copper area, then applies ideal equal sharing across ``parallel_paths``.
+    """
+    if not np.isfinite(conductivity_s_per_m) or conductivity_s_per_m <= 0.0:
+        raise ValueError("conductivity_s_per_m must be finite and positive")
+    if not component.windings:
+        return {}
+
+    conductors_by_name = {conductor.name: conductor for conductor in component.conductors}
+    resistances_ohm = {}
+    for winding in component.windings:
+        bundle_resistance_sum_ohm = 0.0
+        for turn in winding.turns:
+            conductor_name = turn.conductor or winding.conductor
+            conductor = conductors_by_name.get(conductor_name)
+            if (
+                conductor is None
+                or conductor.construction != "litz"
+                or conductor.strands is None
+                or conductor.strand_diameter is None
+            ):
+                raise ValueError(
+                    f"Winding {winding.name!r} requires defined Litz strand data."
+                )
+            turn_radius_m = float(turn.center[0])
+            if not np.isfinite(turn_radius_m) or turn_radius_m <= 0.0:
+                raise ValueError(f"Winding {winding.name!r} has an invalid turn radius.")
+            if conductor.strands < 1 or conductor.strand_diameter <= 0.0:
+                raise ValueError(f"Conductor {conductor.name!r} has invalid Litz strand data.")
+
+            strand_area_m2 = np.pi * conductor.strand_diameter**2 / 4.0
+            copper_area_m2 = conductor.strands * strand_area_m2
+            bundle_resistance_sum_ohm += (
+                2.0 * np.pi * turn_radius_m
+                / (conductivity_s_per_m * copper_area_m2)
+            )
+        resistances_ohm[winding.name] = (
+            bundle_resistance_sum_ohm / winding.parallel_paths**2
+        )
+    return resistances_ohm
+
+
 def winding_litz_losses(
     mesh: AxisymmetricMesh,
     current_densities: Mapping[str, np.ndarray],

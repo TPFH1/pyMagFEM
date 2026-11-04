@@ -31,6 +31,7 @@ from .plot import PhysicalField, plot_mesh, plot_physical_field
 from .postprocess import (
                           WindingLosses,
                           TransformerEquivalent,
+                          analytical_dc_winding_resistances,
                           core_loss,
                           core_losses,
                           inductance,
@@ -72,6 +73,7 @@ __all__ = [
                           "SimulationResultReport",
                           "WindingLosses",
                           "TransformerEquivalent",
+                          "analytical_dc_winding_resistances",
                           "transformer_equivalent",
                           "solve_operating_point",
                           "absolute_to_relative_permeability",

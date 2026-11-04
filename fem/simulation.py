@@ -12,6 +12,7 @@ from model import FEMModel
 
 from .frequency_solver import solve_frequency_domain
 from .litz import LitzProperties, meeker_litz_properties
+from .nonlinear import NonlinearCoreMaterial
 from .physics import complex_relative_permeability
 from .postprocess import (
     WindingLosses,
@@ -105,6 +106,7 @@ class FrequencyDomainResult:
     conductivity: float
     relative_permeability: dict[str, complex]
     nonlinear_material: Any | None = None
+    nonlinear_materials: dict[str, NonlinearCoreMaterial] = field(default_factory=dict)
     litz_properties: dict[str, LitzProperties] = field(default_factory=dict)
 
     @classmethod
@@ -118,6 +120,7 @@ class FrequencyDomainResult:
         frequency_hz: float | None = None,
         turn_voltages: dict[str, complex] | None = None,
         nonlinear_material: Any | None = None,
+        nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
     ) -> FrequencyDomainResult:
         """Wrap an externally solved field in the model-aware result API."""
         return cls(
@@ -132,7 +135,11 @@ class FrequencyDomainResult:
             conductivity=_conductivity(model),
             relative_permeability=_permeability_map(model),
             nonlinear_material=nonlinear_material,
+            nonlinear_materials=dict(nonlinear_materials or {}),
         )
+
+    def _core_nonlinear_material(self) -> NonlinearCoreMaterial | None:
+        return self.nonlinear_materials.get("core", self.nonlinear_material)
 
     def magnetic_flux_density(self) -> np.ndarray:
         return magnetic_flux_density(self.mesh, self.a_phi)
@@ -142,7 +149,7 @@ class FrequencyDomainResult:
             self.mesh,
             self.a_phi,
             relative_permeability=self.relative_permeability,
-            nonlinear_material=self.nonlinear_material,
+            nonlinear_material=self._core_nonlinear_material(),
         )
         if self.litz_properties:
             flux_density = self.magnetic_flux_density()
@@ -182,6 +189,7 @@ class FrequencyDomainResult:
             permittivity_loss_angle_deg=float(
                 getattr(core_material, "permittivity_loss_angle_deg", 0.0)
             ),
+            nonlinear_material=self._core_nonlinear_material(),
         )
 
     def winding_losses(self) -> dict[str, WindingLosses]:
@@ -356,6 +364,7 @@ def solve_operating_point(
     frequency_hz: float,
     currents: Mapping[str, complex],
     mesh: AxisymmetricMesh | None = None,
+    nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
 ) -> FrequencyDomainResult:
     """Solve terminal-current phasors on an independent model copy.
 
@@ -375,7 +384,10 @@ def solve_operating_point(
     component = deepcopy(model)
     component.excitation.frequency = frequency_hz
     component.excitation.circuits = values
-    return FrequencyDomainSimulation(component, mesh=mesh).solve()
+    simulation = FrequencyDomainSimulation(component, mesh=mesh)
+    if nonlinear_materials is None:
+        return simulation.solve()
+    return simulation.solve(nonlinear_materials=nonlinear_materials)
 
 
 @dataclass
@@ -397,7 +409,11 @@ class FrequencyDomainSimulation:
             for circuit in self.model.circuits
         }
 
-    def solve(self) -> FrequencyDomainResult:
+    def solve(
+        self,
+        *,
+        nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
+    ) -> FrequencyDomainResult:
         mesh = self.mesh
         if mesh is None:
             mesh = self.create_mesh()
@@ -438,6 +454,9 @@ class FrequencyDomainSimulation:
                         / (winding.parallel_paths * conductor_area(mesh, conductor_index))
                     )
                 conductor_index += 1
+        solve_options = {}
+        if nonlinear_materials is not None:
+            solve_options["nonlinear_materials"] = nonlinear_materials
         solved = solve_frequency_domain(
             mesh,
             frequency=frequency,
@@ -449,6 +468,7 @@ class FrequencyDomainSimulation:
             current_modes=current_modes,
             fixed_current_density=fixed_current_density,
             litz_properties=litz_properties,
+            **solve_options,
         )
         a_phi, densities, voltages = cast(
             tuple[np.ndarray, dict[str, np.ndarray], dict[str, complex]],
@@ -463,5 +483,7 @@ class FrequencyDomainSimulation:
             frequency_hz=frequency,
             conductivity=conductivity,
             relative_permeability=relative_permeability,
+            nonlinear_material=(nonlinear_materials or {}).get("core"),
+            nonlinear_materials=dict(nonlinear_materials or {}),
             litz_properties=litz_properties,
         )

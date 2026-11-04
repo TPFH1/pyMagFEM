@@ -56,6 +56,52 @@ def _mesh():
     )
 
 
+def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_requested(
+    monkeypatch,
+):
+    from fem import NonlinearCoreMaterial, solve_operating_point
+
+    mesh = _mesh()
+    nonlinear_core = NonlinearCoreMaterial(
+        relative_permeability=lambda values: np.ones_like(values, dtype=complex),
+        conductivity=1.0 + 0.0j,
+        temperature=90.0,
+        frequency=250e3,
+    )
+    component = FEMModel(
+        materials=[Material("core", relative_permeability=1000.0)],
+        circuits=[Circuit("primary")],
+    )
+    solve_options = {}
+
+    def fake_frequency_solve(mesh, **kwargs):
+        solve_options.update(kwargs)
+        return np.zeros(len(mesh.points), dtype=complex), {}, {}
+
+    monkeypatch.setattr("fem.simulation.solve_frequency_domain", fake_frequency_solve)
+    result = solve_operating_point(
+        component,
+        mesh=mesh,
+        frequency_hz=250e3,
+        currents={"primary": 2.0 + 0.0j},
+        nonlinear_materials={"core": nonlinear_core},
+    )
+
+    assert solve_options["nonlinear_materials"] == {"core": nonlinear_core}
+    assert result.nonlinear_material is nonlinear_core
+    assert result.nonlinear_materials == {"core": nonlinear_core}
+
+    loss_options = {}
+
+    def fake_core_losses(*_args, **kwargs):
+        loss_options.update(kwargs)
+        return 0.0, 0.0, 0.0
+
+    monkeypatch.setattr("fem.simulation.core_losses", fake_core_losses)
+    result.core_losses()
+    assert loss_options["nonlinear_material"] is nonlinear_core
+
+
 def test_transformer_report_separates_losses_and_skips_zero_current_inductance(monkeypatch):
     from fem.simulation import FrequencyDomainResult
 

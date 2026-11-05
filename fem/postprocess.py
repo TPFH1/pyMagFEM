@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from model import FEMModel
+
+    from .simulation import FrequencyDomainResult
 
 from .litz import LitzLoss, litz_loss
 from .nonlinear import NonlinearCoreMaterial
@@ -154,6 +161,63 @@ def winding_copper_losses(
             loss += 0.5 * 2.0 * np.pi * radius * area * abs(density[element]) ** 2 / conductivity
         losses.append(LitzLoss(float(loss), 0.0))
     return WindingLosses(tuple(losses))
+
+
+def analytical_dc_winding_resistances(
+    component: FEMModel,
+) -> dict[str, float]:
+    """Estimate terminal DC resistance for each Litz winding in ohms.
+
+    The estimate sums each physical bundle-turn circumference using its strand
+    copper area and component material conductivity, then applies ideal equal
+    sharing across ``parallel_paths``.
+    """
+    if not component.windings:
+        return {}
+
+    conductors_by_name = {conductor.name: conductor for conductor in component.conductors}
+    materials_by_name = {material.name: material for material in component.materials}
+    resistances_ohm = {}
+    for winding in component.windings:
+        bundle_resistance_sum_ohm = 0.0
+        for turn in winding.turns:
+            conductor_name = turn.conductor or winding.conductor
+            conductor = conductors_by_name.get(conductor_name)
+            if (
+                conductor is None
+                or conductor.construction != "litz"
+                or conductor.strands is None
+                or conductor.strand_diameter is None
+            ):
+                raise ValueError(
+                    f"Winding {winding.name!r} requires defined Litz strand data."
+                )
+            material = materials_by_name.get(conductor.material)
+            if (
+                material is None
+                or not np.isfinite(material.conductivity)
+                or material.conductivity <= 0.0
+            ):
+                raise ValueError(
+                    f"Conductor {conductor.name!r} requires a material with finite, "
+                    "positive conductivity."
+                )
+            turn_radius_m = float(turn.center[0])
+            if not np.isfinite(turn_radius_m) or turn_radius_m <= 0.0:
+                raise ValueError(f"Winding {winding.name!r} has an invalid turn radius.")
+            if conductor.strands < 1 or conductor.strand_diameter <= 0.0:
+                raise ValueError(f"Conductor {conductor.name!r} has invalid Litz strand data.")
+
+            strand_area_m2 = np.pi * conductor.strand_diameter**2 / 4.0
+            copper_area_m2 = conductor.strands * strand_area_m2
+            bundle_resistance_sum_ohm += (
+                2.0 * np.pi * turn_radius_m
+                / (material.conductivity * copper_area_m2)
+            )
+        resistances_ohm[winding.name] = (
+            bundle_resistance_sum_ohm / winding.parallel_paths**2
+        )
+    return resistances_ohm
 
 
 def winding_litz_losses(
@@ -347,6 +411,7 @@ def winding_flux_linkage(
         raise ValueError("current must be non-zero")
     values = []
     signs = mesh.geometry.get("conductor_signs", [1.0] * len(mesh.conductor_regions or {}))
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(signs))
     for index, item in enumerate(mesh.geometry["p_cond_center_1"]):
         center = np.asarray(item, dtype=float)
         elements = np.asarray(
@@ -355,7 +420,8 @@ def winding_flux_linkage(
         if len(elements) == 0:
             distances = np.linalg.norm(mesh.points - center[:2], axis=1)
             local = np.array([np.argmin(distances)])
-            values.append(2.0 * np.pi * center[0] * a_phi[local[0]])
+            values.append(float(signs[index]) * float(fractions[index])
+                          * 2.0 * np.pi * center[0] * a_phi[local[0]])
             continue
         weighted_flux = 0.0
         area_total = 0.0
@@ -377,7 +443,7 @@ def winding_flux_linkage(
             )
             weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
             area_total += area
-        values.append(float(signs[index]) * weighted_flux / area_total)
+        values.append(float(signs[index]) * float(fractions[index]) * weighted_flux / area_total)
     linkage = np.sum(values)
     return linkage if turns is None else linkage * float(turns) / max(len(values), 1)
 
@@ -386,10 +452,11 @@ def winding_flux_linkages(
     mesh: AxisymmetricMesh,
     a_phi: np.ndarray,
 ) -> dict[str, complex]:
-    """Return signed flux linkage grouped by winding name."""
+    """Return signed terminal flux linkage, averaging equal-current parallel paths."""
     names = mesh.geometry.get("conductor_windings", [])
     centers = mesh.geometry.get("p_cond_center_1", [])
     signs = mesh.geometry.get("conductor_signs", [1.0] * len(centers))
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(centers))
     result: dict[str, complex] = {}
     for index, center in enumerate(centers):
         winding = names[index] if index < len(names) else "winding"
@@ -422,8 +489,153 @@ def winding_flux_linkages(
                 weighted_flux += area * 2.0 * np.pi * np.mean(xy[:, 0]) * np.mean(a_phi[nodes])
                 area_total += area
             flux = weighted_flux / area_total
-        result[winding] = result.get(winding, 0.0j) + float(signs[index]) * flux
+        result[winding] = (result.get(winding, 0.0j)
+                   + float(signs[index]) * float(fractions[index]) * flux)
     return result
+
+
+def inductance_matrix(
+    model: FEMModel,
+    *,
+    mesh: AxisymmetricMesh | None = None,
+    winding_order: list[str] | None = None,
+    test_current: float = 1.0,
+    return_results: bool = False,
+) -> np.ndarray | tuple[np.ndarray, dict[str, FrequencyDomainResult]]:
+    """Solve open-circuit basis excitations and return complex inductances in H.
+
+    Rows are linked windings and columns are excited windings, both in
+    ``winding_order`` (model winding order by default). Each column is the
+    flux-linkage vector divided by ``test_current`` with every other circuit
+    held at zero net current. Materials, frequency, and phasor convention come
+    from the model. The same mesh is reused and the input model is not mutated.
+
+    Windings must have distinct circuits. This is a linear frequency-domain
+    identification, not an incremental nonlinear inductance calculation.
+    With ``return_results=True``, also return solved cases keyed by driven
+    winding name. No reciprocity averaging is applied.
+    """
+    from .simulation import FrequencyDomainSimulation
+
+    if not np.isfinite(test_current) or test_current == 0:
+        raise ValueError("test_current must be finite and non-zero")
+    windings = {winding.name: winding for winding in model.windings}
+    if not windings or len(windings) != len(model.windings):
+        raise ValueError("model must contain uniquely named windings")
+    order = list(windings) if winding_order is None else list(winding_order)
+    if len(order) != len(windings) or set(order) != set(windings):
+        raise ValueError("winding_order must contain each model winding exactly once")
+    circuits = [windings[name].circuit for name in order]
+    if any(not circuit for circuit in circuits) or len(set(circuits)) != len(circuits):
+        raise ValueError("each winding must have a distinct, non-empty circuit")
+    if mesh is None:
+        mesh = FrequencyDomainSimulation(model).create_mesh()
+    matrix = np.empty((len(order), len(order)), dtype=complex)
+    results = {}
+    for column, driven_name in enumerate(order):
+        test_model = deepcopy(model)
+        test_model.excitation.circuits = {
+            circuit: test_current if circuit == windings[driven_name].circuit else 0.0
+            for circuit in circuits
+        }
+        result = FrequencyDomainSimulation(test_model, mesh=mesh).solve()
+        linkages = result.winding_flux_linkages()
+        matrix[:, column] = [linkages[name] / test_current for name in order]
+        results[driven_name] = result
+    if not np.isfinite(matrix).all():
+        raise ValueError("inductance matrix contains non-finite values")
+    return (matrix, results) if return_results else matrix
+
+
+@dataclass(frozen=True)
+class TransformerEquivalent:
+    """Inductive two-winding T-equivalent with primary-side magnetizing branch."""
+
+    turns_ratio: float
+    coupling_coefficient: float
+    magnetizing_primary_h: float
+    leakage_primary_h: float
+    leakage_secondary_h: float
+    secondary_series_inductance_h: float
+    reciprocity_error_h: float
+
+    @property
+    def leakage_secondary_referred_primary_h(self) -> float:
+        return self.turns_ratio**2 * self.leakage_secondary_h
+
+    @property
+    def transformer_leakage_referred_primary_h(self) -> float:
+        return self.leakage_primary_h + self.leakage_secondary_referred_primary_h
+
+    @property
+    def external_inductance_referred_primary_h(self) -> float:
+        return self.turns_ratio**2 * self.secondary_series_inductance_h
+
+    @property
+    def total_leakage_referred_primary_h(self) -> float:
+        return (self.transformer_leakage_referred_primary_h
+                + self.external_inductance_referred_primary_h)
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            **asdict(self),
+            "leakage_secondary_referred_primary_h": self.leakage_secondary_referred_primary_h,
+            "transformer_leakage_referred_primary_h": self.transformer_leakage_referred_primary_h,
+            "external_inductance_referred_primary_h": self.external_inductance_referred_primary_h,
+            "total_leakage_referred_primary_h": self.total_leakage_referred_primary_h,
+        }
+
+    def print(self) -> None:
+        print(f"Ideal turns ratio: {self.turns_ratio:.6f}:1")
+        print(f"Coupling coefficient: {self.coupling_coefficient:.8f}")
+        for label, value in (
+            ("Primary magnetizing inductance", self.magnetizing_primary_h),
+            ("Primary series leakage", self.leakage_primary_h),
+            ("Secondary series leakage", self.leakage_secondary_h),
+            ("Transformer-only leakage referred to primary", self.transformer_leakage_referred_primary_h),
+            ("External secondary series inductance", self.secondary_series_inductance_h),
+            ("External inductance referred to primary", self.external_inductance_referred_primary_h),
+            ("Total series leakage referred to primary", self.total_leakage_referred_primary_h),
+        ):
+            print(f"{label}: {value * 1e6:.6f} uH")
+        if abs(self.coupling_coefficient) > 1:
+            print("Warning: |k| > 1; check matrix passivity and mesh convergence.")
+
+
+def transformer_equivalent(
+    matrix_h: np.ndarray,
+    *,
+    secondary_series_inductance_h: float = 0.0,
+) -> TransformerEquivalent:
+    """Extract an inductive T-model from a primary/secondary 2x2 matrix in H.
+
+    Uses real self-inductances, the mean real mutual term, and
+    n=sqrt(L11/L22). The input matrix is not changed. Losses remain in the
+    original complex matrix and are not represented by this inductive model.
+    Optional external secondary series inductance is referred by n squared;
+    it does not change the extracted ratio or intrinsic winding parameters.
+    """
+    matrix = np.asarray(matrix_h, dtype=complex)
+    if matrix.shape != (2, 2) or not np.isfinite(matrix).all():
+        raise ValueError("matrix_h must be a finite 2x2 inductance matrix")
+    external = float(secondary_series_inductance_h)
+    if not np.isfinite(external) or external < 0:
+        raise ValueError("secondary_series_inductance_h must be finite and non-negative")
+    l11, l22 = float(matrix[0, 0].real), float(matrix[1, 1].real)
+    if l11 <= 0 or l22 <= 0:
+        raise ValueError("self-inductances must be positive")
+    mutual = float((matrix[0, 1].real + matrix[1, 0].real) / 2.0)
+    ratio = float(np.sqrt(l11 / l22))
+    magnetizing = ratio * mutual
+    return TransformerEquivalent(
+        turns_ratio=ratio,
+        coupling_coefficient=mutual / float(np.sqrt(l11 * l22)),
+        magnetizing_primary_h=magnetizing,
+        leakage_primary_h=l11 - magnetizing,
+        leakage_secondary_h=l22 - mutual / ratio,
+        secondary_series_inductance_h=external,
+        reciprocity_error_h=float(abs(matrix[0, 1] - matrix[1, 0])),
+    )
 
 
 def winding_voltages(
@@ -434,13 +646,15 @@ def winding_voltages(
     frequency: float,
     conductivity: float = 58e6,
     phasor_convention: str = "cosine",
+    conductor_conductivities: Mapping[str, complex] | None = None,
 ) -> dict[str, complex]:
     """Return the per-conductor ring-source voltages.
 
     The source voltage is reconstructed from the constitutive relation used by
     the frequency-domain solver. It already contains both the resistive and
     induced contributions; adding an induced-voltage estimate to a loss-based
-    resistance drop would count the field contribution twice.
+    resistance drop would count the field contribution twice. Optional
+    per-conductor conductivities support homogenized conductor models.
     """
     if current == 0:
         raise ValueError("current must be non-zero")
@@ -455,6 +669,11 @@ def winding_voltages(
 
     for index, center in enumerate(mesh.geometry["p_cond_center_1"]):
         name = f"conductor_{index}"
+        conductor_conductivity = complex(
+            (conductor_conductivities or {}).get(name, conductivity)
+        )
+        if not np.isfinite(conductor_conductivity) or conductor_conductivity == 0.0:
+            raise ValueError(f"conductivity for {name} must be finite and non-zero")
         elements = np.asarray((mesh.conductor_regions or {}).get(name, []), dtype=int)
         density = densities.get(name)
         if density is None or len(elements) == 0:
@@ -487,10 +706,42 @@ def winding_voltages(
                 * np.pi
                 / inverse_radius
                 * (
-                    density[element] / conductivity
+                    density[element] / conductor_conductivity
                     + omega_sign * 2.0 * np.pi * float(frequency) * np.mean(a_phi[nodes])
                 )
             )
             area_total += area
         result[name] = float(signs[index]) * voltage / area_total
     return result
+
+
+def winding_terminal_voltages(
+    mesh: AxisymmetricMesh,
+    conductor_voltages: Mapping[str, complex],
+) -> dict[str, complex]:
+    """Sum polarity-aligned turn voltages, averaging ideal parallel paths."""
+    centers = mesh.geometry.get("p_cond_center_1", [])
+    windings = mesh.geometry.get("conductor_windings", [])
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(centers))
+    result: dict[str, complex] = {}
+    for index in range(len(centers)):
+        conductor_name = f"conductor_{index}"
+        if conductor_name not in conductor_voltages:
+            raise ValueError(f"missing voltage for {conductor_name}")
+        winding = windings[index] if index < len(windings) else "winding"
+        fraction = float(fractions[index]) if index < len(fractions) else 1.0
+        result[winding] = result.get(winding, 0.0j) + (
+            complex(conductor_voltages[conductor_name]) * fraction
+        )
+    return result
+
+
+def winding_complex_powers(
+    terminal_voltages: Mapping[str, complex],
+    terminal_currents: Mapping[str, complex],
+) -> dict[str, complex]:
+    """Return winding complex powers in VA from peak voltage/current phasors."""
+    return {
+        name: 0.5 * complex(voltage) * complex(terminal_currents.get(name, 0.0)).conjugate()
+        for name, voltage in terminal_voltages.items()
+    }

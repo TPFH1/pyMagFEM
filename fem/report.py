@@ -177,6 +177,7 @@ def build_result_report(
     geometry = mesh.geometry
     winding_names = geometry.get("conductor_windings", [])
     current_signs = geometry.get("conductor_signs", [])
+    current_fractions = geometry.get("conductor_current_fractions", [])
     expected_currents = list(current_map.values())
     conductors: dict[str, Any] = {}
     for index, name in enumerate(conductor_names):
@@ -187,13 +188,14 @@ def build_result_report(
             else name
         )
         sign = float(current_signs[index]) if index < len(current_signs) else 1.0
+        fraction = float(current_fractions[index]) if index < len(current_fractions) else 1.0
         expected = (
             (current_map.get(winding)
              if winding in current_map
              else current_map.get("current")
              if "current" in current_map
              else (expected_currents[0] if expected_currents else 0.0))
-            * sign
+            * sign * fraction
         )
         actual = integrated_current(mesh, density, name)
         conductors[name] = {
@@ -222,9 +224,9 @@ def build_result_report(
     winding_data: dict[str, Any] = {}
     solid_by_winding = solid_losses if isinstance(solid_losses, Mapping) else {}
     litz_by_winding = litz_losses if isinstance(litz_losses, Mapping) else {}
-    if solid_losses is not None and not solid_by_winding:
+    if solid_losses is not None and not isinstance(solid_losses, Mapping):
         solid_by_winding = {"winding": solid_losses}
-    if litz_losses is not None and not litz_by_winding:
+    if litz_losses is not None and not isinstance(litz_losses, Mapping):
         litz_by_winding = {"winding": litz_losses}
     for name in set(solid_by_winding) | set(litz_by_winding):
         winding_data[str(name)] = {}

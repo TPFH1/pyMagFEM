@@ -213,9 +213,10 @@ def _target_currents(
 ) -> dict[str, complex]:
     """Expand winding/circuit current commands to individual turn currents."""
     signs = mesh.geometry.get("conductor_signs", [1.0] * len(names))
+    fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(names))
     if not isinstance(currents, Mapping):
         return {
-            name: complex(currents) * float(signs[index])
+            name: complex(currents) * float(signs[index]) * float(fractions[index])
             for index, name in enumerate(names)
         }
     winding_names = mesh.geometry.get("conductor_windings", [])
@@ -223,11 +224,14 @@ def _target_currents(
     target: dict[str, complex] = {}
     for index, name in enumerate(names):
         value = currents.get(name)
+        direct_command = value is not None
         if value is None and index < len(winding_names):
             value = currents.get(winding_names[index])
         if value is None and index < len(circuit_names):
             value = currents.get(circuit_names[index])
         target[name] = complex(0.0 if value is None else value)
+        if not direct_command:
+            target[name] *= float(signs[index]) * float(fractions[index])
     return target
 
 

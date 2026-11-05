@@ -140,6 +140,7 @@ def _build_pygmsh(
     conductor_size: float | None = None,
     conductor_geometry_size: float | None = None,
     physics_adaptive: bool = False,
+    conductor_max_growth: float | None = None,
 ) -> AxisymmetricMesh:
     """Build a conforming OCC/pygmsh mesh from explicit material surfaces."""
     import gmsh
@@ -350,10 +351,6 @@ def _build_pygmsh(
                         )
                         fields.append(gap_field)
 
-            if fields:
-                background = gmsh.model.mesh.field.add("Min")
-                gmsh.model.mesh.field.setNumbers(background, "FieldsList", fields)
-                gmsh.model.mesh.field.setAsBackgroundMesh(background)
             if conductor_size is not None or conductor_geometry_size is not None:
                 conductor_surfaces = []
                 for _, surface_tag in gmsh.model.getEntities(2):
@@ -374,15 +371,32 @@ def _build_pygmsh(
                         )
                     ):
                         conductor_surfaces.append(surface_tag)
+                center_size = h
+                if conductor_max_growth is not None:
+                    center_size = min(h, geometry_size * conductor_max_growth)
+                    interior_size = gmsh.model.mesh.field.add("MathEval")
+                    gmsh.model.mesh.field.setString(interior_size, "F", f"{center_size:.17g}")
+                    interior_limit = gmsh.model.mesh.field.add("Restrict")
+                    gmsh.model.mesh.field.setNumber(interior_limit, "InField", interior_size)
+                    gmsh.model.mesh.field.setNumbers(
+                        interior_limit, "SurfacesList", conductor_surfaces
+                    )
+                    fields.append(interior_limit)
                 for center in centers:
-                    distances = np.linalg.norm(centers - center, axis=1)
-                    surface_tag = conductor_surfaces[int(np.argmin(distances))]
+                    surface_tag = next(
+                        tag for tag in conductor_surfaces
+                        if gmsh.model.isInside(2, tag, [float(center[0]), float(center[1]), 0.0])
+                    )
                     point_tag = gmsh.model.occ.addPoint(
                         float(center[0]), float(center[1]), 0.0
                     )
                     gmsh.model.occ.synchronize()
                     gmsh.model.mesh.embed(0, [point_tag], 2, surface_tag)
-                    gmsh.model.mesh.setSize([(0, point_tag)], h)
+                    gmsh.model.mesh.setSize([(0, point_tag)], center_size)
+            if fields:
+                background = gmsh.model.mesh.field.add("Min")
+                gmsh.model.mesh.field.setNumbers(background, "FieldsList", fields)
+                gmsh.model.mesh.field.setAsBackgroundMesh(background)
         msh = geom.generate_mesh(dim=2)
     points = np.asarray(msh.points[:, :2], dtype=float)
     cells = msh.cells_dict.get("triangle")
@@ -425,13 +439,22 @@ def build_mesh(
     conductor_size: float | None = None,
     physics_adaptive: bool = True,
     conductor_geometry_size: float | None = None,
+    conductor_max_growth: float | None = None,
 ) -> AxisymmetricMesh:
     """Create a conforming Gmsh/pygmsh mesh from a normalized model object.
 
     ``conductor_geometry_size`` controls moderate refinement along conductor
     boundaries. ``conductor_size`` adds the finer skin-depth refinement used
     for solid conductors.
+    ``conductor_max_growth`` optionally caps conductor-interior target sizes
+    at this multiple of the geometry boundary size (for example 1.5). The
+    restriction does not refine core or air surfaces. None preserves the
+    previous grading. Actual triangle edge lengths may exceed target sizes.
     """
+    if conductor_max_growth is not None and (
+        not np.isfinite(conductor_max_growth) or conductor_max_growth < 1.0
+    ):
+        raise ValueError("conductor_max_growth must be finite and at least 1")
     g = _geometry_data(model)
     g["materials"] = model.materials
     outer = _bounds(g["p_outer"])
@@ -447,6 +470,7 @@ def build_mesh(
         conductor_size=conductor_size,
         conductor_geometry_size=conductor_geometry_size,
         physics_adaptive=physics_adaptive,
+        conductor_max_growth=conductor_max_growth,
     )
 
 
@@ -456,6 +480,7 @@ def mesh_from_json(
     conductor_size: float | None = None,
     physics_adaptive: bool = True,
     conductor_geometry_size: float | None = None,
+    conductor_max_growth: float | None = None,
 ) -> AxisymmetricMesh:
     """Load a JSON model and build its mesh."""
     return build_mesh(
@@ -463,5 +488,6 @@ def mesh_from_json(
         max_size=max_size,
         conductor_size=conductor_size,
         conductor_geometry_size=conductor_geometry_size,
+        conductor_max_growth=conductor_max_growth,
         physics_adaptive=physics_adaptive,
     )

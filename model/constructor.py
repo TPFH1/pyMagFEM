@@ -6,8 +6,11 @@ then converts those specifications into the existing :class:`FEMModel` schema.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from itertools import pairwise
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
+from itertools import combinations
+from math import isclose, isfinite, pi, sqrt
+from typing import Literal
 
 from .schema import (
     Circuit,
@@ -165,6 +168,14 @@ class WindingSpec:
     circuit: str
     layers: tuple[WindingLayer, ...]
     current: float = 0.0
+    parallel_paths: int = 1
+
+    def __post_init__(self) -> None:
+        if (isinstance(self.parallel_paths, bool) or not isinstance(self.parallel_paths, int)
+                or self.parallel_paths < 1):
+            raise ValueError("parallel_paths must be a positive integer")
+        if sum(len(layer.radial_centers) for layer in self.layers) % self.parallel_paths:
+            raise ValueError("physical conductor count must be divisible by parallel_paths")
 
     def model_winding(self) -> ModelWinding:
         turns = [
@@ -177,11 +188,12 @@ class WindingSpec:
             turns=turns,
             conductor=self.conductor.name,
             circuit=self.circuit,
+            parallel_paths=self.parallel_paths,
         )
 
     @property
     def turns_count(self) -> int:
-        return sum(len(layer.radial_centers) for layer in self.layers)
+        return sum(len(layer.radial_centers) for layer in self.layers) // self.parallel_paths
 
 
 @dataclass(frozen=True)
@@ -261,17 +273,49 @@ class AirGapSpec:
 
 @dataclass(frozen=True)
 class InsulationSpec:
-    """Clearances between core and windings and between adjacent layers."""
+    """Core clearances and winding-to-winding insulation distances in metres.
+
+    ``w2w_matrix`` is ordered like the supplied windings. Its diagonal gives
+    same-winding bundle spacing, and off-diagonal entries give pairwise
+    winding spacing. It must be square, symmetric, finite, and non-negative.
+    When omitted, the legacy scalar ``w2w`` applies to every pair.
+    """
 
     c2w_left: float = 0.0
     c2w_right: float = 0.0
     c2w_top: float = 0.0
     c2w_bottom: float = 0.0
     w2w: float = 0.0
+    w2w_matrix: Sequence[Sequence[float]] | None = None
 
     def __post_init__(self) -> None:
-        if min(self.c2w_left, self.c2w_right, self.c2w_top, self.c2w_bottom, self.w2w) < 0:
-            raise ValueError("insulation distances cannot be negative")
+        distances = (self.c2w_left, self.c2w_right, self.c2w_top, self.c2w_bottom, self.w2w)
+        if not all(isfinite(value) and value >= 0 for value in distances):
+            raise ValueError("insulation distances must be finite and non-negative")
+        if self.w2w_matrix is not None:
+            try:
+                matrix = tuple(tuple(float(value) for value in row) for row in self.w2w_matrix)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("w2w_matrix must be a square numeric matrix") from exc
+            if not matrix or any(len(row) != len(matrix) for row in matrix):
+                raise ValueError("w2w_matrix must be non-empty and square")
+            if not all(isfinite(value) and value >= 0 for row in matrix for value in row):
+                raise ValueError("w2w_matrix entries must be finite and non-negative")
+            if any(not isclose(matrix[row][column], matrix[column][row], rel_tol=1e-12, abs_tol=1e-15)
+                   for row in range(len(matrix)) for column in range(row)):
+                raise ValueError("w2w_matrix must be symmetric")
+            object.__setattr__(self, "w2w_matrix", matrix)
+
+    def validate_winding_count(self, count: int) -> None:
+        if self.w2w_matrix is not None and len(self.w2w_matrix) != count:
+            raise ValueError("w2w_matrix size must match the number of windings")
+
+    def winding_clearance(self, first: int, second: int) -> float:
+        if self.w2w_matrix is None:
+            return self.w2w
+        if not (0 <= first < len(self.w2w_matrix) and 0 <= second < len(self.w2w_matrix)):
+            raise ValueError("winding insulation index is out of range")
+        return self.w2w_matrix[first][second]
 
 
 @dataclass
@@ -297,13 +341,26 @@ class Constructor:
         current: float = 0.0,
         traversal: str = "inside2outside-bottom2top",
         serpentine: bool = True,
+        parallel_paths: int = 1,
+        winding_index: int = 0,
     ) -> WindingSpec:
         """Place turns in a rectangular window using insulation clearances.
 
         ``traversal`` defines the first radial and axial directions. The
         optional serpentine traversal reverses the radial order on alternate
         axial rows, matching common layer-wound coils.
+        ``turns`` is the electrical series turn count. ``parallel_paths``
+        places that many equal-current physical bundles for each turn.
+        ``winding_index`` selects the diagonal entry when the insulation
+        contains a matrix; off-diagonal gaps are checked by ``build()``.
         """
+        insulation = replace(
+            insulation, w2w=insulation.winding_clearance(winding_index, winding_index),
+            w2w_matrix=None,
+        )
+        if (isinstance(parallel_paths, bool) or not isinstance(parallel_paths, int)
+                or parallel_paths < 1):
+            raise ValueError("parallel_paths must be a positive integer")
         if turns <= 0 or radial_columns <= 0:
             raise ValueError("turns and radial_columns must be positive")
         if traversal not in {
@@ -315,7 +372,8 @@ class Constructor:
             raise ValueError(f"unsupported winding traversal: {traversal!r}")
         radial_forward = traversal.startswith("inside2outside")
         axial_forward = traversal.endswith("bottom2top")
-        rows = (turns + radial_columns - 1) // radial_columns
+        physical_turns = turns * parallel_paths
+        rows = (physical_turns + radial_columns - 1) // radial_columns
         radial_pitch = 2.0 * conductor.radial_half_width + insulation.w2w
         axial_pitch = conductor.height + insulation.w2w
         radial_start = (
@@ -340,7 +398,7 @@ class Constructor:
         if not axial_forward:
             axial_centers.reverse()
         layers: list[WindingLayer] = []
-        remaining = turns
+        remaining = physical_turns
         for row, z in enumerate(axial_centers):
             count = min(radial_columns, remaining)
             row_centers = radial_centers[:count]
@@ -354,7 +412,7 @@ class Constructor:
                 circuit,
             ))
             remaining -= count
-        result = WindingSpec(name, conductor, circuit, tuple(layers), current)
+        result = WindingSpec(name, conductor, circuit, tuple(layers), current, parallel_paths)
         probe = Constructor(
             core=core,
             windings=(result,),
@@ -378,6 +436,8 @@ class Constructor:
 
     def _stack_limits(self) -> tuple[float, float]:
         winding_by_name = {winding.name: winding for winding in self.windings}
+        self.insulation.validate_winding_count(len(self.windings))
+        winding_indices = {name: index for index, name in enumerate(winding_by_name)}
         if len(winding_by_name) != len(self.windings):
             raise ValueError("winding names must be unique")
         layers = [layer for winding in self.windings for layer in winding.layers]
@@ -396,16 +456,27 @@ class Constructor:
             name: winding.conductor.height / 2.0
             for name, winding in winding_by_name.items()
         }
+        radial_half_width = {
+            name: winding.conductor.radial_half_width
+            for name, winding in winding_by_name.items()
+        }
         intervals = sorted(
             (
                 layer.z - height_by_winding[layer.winding],
                 layer.z + height_by_winding[layer.winding],
+                radius - radial_half_width[layer.winding],
+                radius + radial_half_width[layer.winding],
+                winding_indices[layer.winding],
             )
             for layer in layers
+            for radius in layer.radial_centers
         )
         tolerance = 1e-12
-        for previous, current in pairwise(intervals):
-            if current[0] - previous[1] < self.insulation.w2w - tolerance:
+        for previous, current in combinations(intervals, 2):
+            axial_clearance = current[0] - previous[1]
+            radial_clearance = max(current[2] - previous[3], previous[2] - current[3])
+            required_clearance = self.insulation.winding_clearance(previous[4], current[4])
+            if max(axial_clearance, radial_clearance) < required_clearance - tolerance:
                 raise ValueError("winding layers violate the winding-to-winding clearance")
         lower = min(
             layer.z - height_by_winding[layer.winding]
@@ -456,6 +527,11 @@ class Constructor:
             "c2w_bottom": self.insulation.c2w_bottom * 1e3,
             "w2w": self.insulation.w2w * 1e3,
         }
+        if self.insulation.w2w_matrix is not None:
+            core.extra["insulation_mm"]["w2w_matrix"] = [
+                [value * 1e3 for value in row] for row in self.insulation.w2w_matrix
+            ]
+            core.extra["insulation_winding_order"] = [winding.name for winding in self.windings]
         conductors = {winding.conductor.name: winding.conductor for winding in self.windings}
         model_windings = [winding.model_winding() for winding in self.windings]
         circuits = [
@@ -480,3 +556,155 @@ class Constructor:
 
 
 TransformerConstructor = Constructor
+
+
+@dataclass(frozen=True)
+class RadialWindingSpec:
+    """Winding specification with physical bundles arranged in radial columns."""
+
+    name: str
+    conductor: ConductorSpec
+    turns: int
+    parallel_paths: int = 1
+    alignment: Literal["bottom", "center", "top"] = "center"
+    current: float = 0.0
+    radial_columns: int = 1
+
+    def __post_init__(self) -> None:
+        for value in (self.turns, self.parallel_paths):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError("turns and parallel_paths must be positive integers")
+        if self.alignment not in {"bottom", "center", "top"}:
+            raise ValueError("alignment must be 'bottom', 'center', or 'top'")
+        if (isinstance(self.radial_columns, bool) or not isinstance(self.radial_columns, int)
+                or self.radial_columns < 1):
+            raise ValueError("radial_columns must be a positive integer")
+        if self.radial_columns > self.turns * self.parallel_paths:
+            raise ValueError("radial_columns cannot exceed the physical bundle count")
+
+
+def build_concentric_model(
+    *,
+    core_area: float,
+    windings: tuple[RadialWindingSpec, ...],
+    insulation: InsulationSpec,
+    air_gap_length: float = 0.0,
+    name: str = "concentric magnetic component",
+    winding_layout: Literal["concentric", "vertical"] = "concentric",
+) -> FEMModel:
+    """Size an equal-area axisymmetric core and place transformer windings.
+
+    All lengths are in metres, ``core_area`` in square metres. In the default
+    ``concentric`` layout, windings are ordered inside to outside. In ``vertical``
+    layout, exactly two windings are ordered bottom to top and share the same
+    radial origin; the off-diagonal insulation entry sets their axial gap. Each
+    winding's ``radial_columns`` controls its physical bundle arrangement.
+    Centre and outer legs have ``core_area``; the yokes have this minimum
+    radial-flux cross section at the centre-leg radius. Materials and
+    excitation frequency are intentionally left to the caller.
+    """
+    if not isfinite(core_area) or core_area <= 0:
+        raise ValueError("core_area must be finite and positive")
+    if not isfinite(air_gap_length) or air_gap_length < 0:
+        raise ValueError("air_gap_length must be finite and non-negative")
+    if winding_layout not in {"concentric", "vertical"}:
+        raise ValueError("winding_layout must be 'concentric' or 'vertical'")
+    if not windings or len({winding.name for winding in windings}) != len(windings):
+        raise ValueError("windings must be non-empty and uniquely named")
+    if winding_layout == "vertical" and len(windings) != 2:
+        raise ValueError("vertical winding_layout requires exactly two windings")
+    insulation.validate_winding_count(len(windings))
+    rows = [
+        (winding.turns * winding.parallel_paths + winding.radial_columns - 1)
+        // winding.radial_columns
+        for winding in windings
+    ]
+    heights = [
+        row_count * winding.conductor.height
+        + (row_count - 1) * insulation.winding_clearance(index, index)
+        for index, (winding, row_count) in enumerate(zip(windings, rows))
+    ]
+    radial_widths = [
+        winding.radial_columns * 2.0 * winding.conductor.radial_half_width
+        + (winding.radial_columns - 1) * insulation.winding_clearance(index, index)
+        for index, winding in enumerate(windings)
+    ]
+    available_height = max(heights)
+    if winding_layout == "vertical":
+        vertical_gap = insulation.winding_clearance(0, 1)
+        window_height = (
+            sum(heights) + vertical_gap + insulation.c2w_top + insulation.c2w_bottom
+        )
+        radial_stack_width = max(radial_widths)
+        interwinding_gaps = 0.0
+    else:
+        window_height = available_height + insulation.c2w_top + insulation.c2w_bottom
+        radial_stack_width = sum(radial_widths)
+        interwinding_gaps = sum(
+            insulation.winding_clearance(index, index + 1)
+            for index in range(len(windings) - 1)
+        )
+    if air_gap_length >= window_height:
+        raise ValueError("air gap must be shorter than the winding window")
+    center_radius = sqrt(core_area / pi)
+    window_outer_radius = (
+        center_radius + insulation.c2w_left + radial_stack_width
+        + interwinding_gaps + insulation.c2w_right
+    )
+    core = CoreSpec(
+        "core", "core",
+        outer_radius=sqrt(window_outer_radius**2 + core_area / pi),
+        outer_half_height=window_height / 2.0 + core_area / (2.0 * pi * center_radius),
+        window_inner_radius=center_radius,
+        window_outer_radius=window_outer_radius,
+        window_half_height=window_height / 2.0,
+        core_type="Single",
+    )
+    placed = []
+    if winding_layout == "vertical":
+        for index, winding in enumerate(windings):
+            bottom_offset = (
+                0.0 if index == 0 else heights[0] + vertical_gap
+            )
+            top_offset = (
+                heights[1] + vertical_gap if index == 0 else 0.0
+            )
+            local_insulation = InsulationSpec(
+                c2w_left=insulation.c2w_left,
+                c2w_right=insulation.c2w_right,
+                c2w_bottom=insulation.c2w_bottom + bottom_offset,
+                c2w_top=insulation.c2w_top + top_offset,
+                w2w=insulation.winding_clearance(index, index),
+            )
+            placed.append(Constructor.place_winding(
+                core=core, insulation=local_insulation, name=winding.name,
+                conductor=winding.conductor, circuit=winding.name,
+                turns=winding.turns, parallel_paths=winding.parallel_paths,
+                radial_columns=winding.radial_columns, current=winding.current,
+            ))
+    else:
+        radial_clearance = insulation.c2w_left
+        for index, (winding, height) in enumerate(zip(windings, heights)):
+            spare_height = available_height - height
+            offset = {"bottom": 0.0, "center": spare_height / 2.0, "top": spare_height}[
+                winding.alignment
+            ]
+            local_insulation = InsulationSpec(
+                c2w_left=radial_clearance,
+                c2w_right=insulation.c2w_right,
+                c2w_bottom=insulation.c2w_bottom + offset,
+                c2w_top=insulation.c2w_top + spare_height - offset,
+                w2w=insulation.winding_clearance(index, index),
+            )
+            placed.append(Constructor.place_winding(
+                core=core, insulation=local_insulation, name=winding.name,
+                conductor=winding.conductor, circuit=winding.name,
+                turns=winding.turns, parallel_paths=winding.parallel_paths,
+                radial_columns=winding.radial_columns, current=winding.current,
+            ))
+            radial_clearance += radial_widths[index]
+            if index + 1 < len(windings):
+                radial_clearance += insulation.winding_clearance(index, index + 1)
+    gaps = ((AirGapSpec("center_gap", center_radius / 2.0, 0.0,
+                        center_radius, air_gap_length),) if air_gap_length else ())
+    return Constructor(core, tuple(placed), gaps, insulation, {"name": name}).build()

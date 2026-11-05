@@ -30,22 +30,28 @@ from .physics import (
 from .plot import PhysicalField, plot_mesh, plot_physical_field
 from .postprocess import (
                           WindingLosses,
+                          TransformerEquivalent,
+                          analytical_dc_winding_resistances,
                           core_loss,
                           core_losses,
                           inductance,
+                          inductance_matrix,
                           magnetic_energy,
                           magnetic_field_intensity,
                           magnetic_flux_density,
                           magnetic_flux_density_nodal,
                           winding_copper_losses,
+                          winding_complex_powers,
                           winding_flux_linkage,
                           winding_flux_linkages,
                           winding_litz_losses,
+                          winding_terminal_voltages,
                           winding_voltages,
+                          transformer_equivalent,
 )
 from .preprocess import AxisymmetricMesh, build_mesh, load_geometry, mesh_from_json
 from .report import SimulationResultReport, build_result_report
-from .simulation import FrequencyDomainResult, FrequencyDomainSimulation
+from .simulation import FrequencyDomainResult, FrequencyDomainSimulation, solve_operating_point
 from .solver import (
                           conductor_area,
                           conductor_current,
@@ -66,6 +72,10 @@ __all__ = [
                           "PhysicalField",
                           "SimulationResultReport",
                           "WindingLosses",
+                          "TransformerEquivalent",
+                          "analytical_dc_winding_resistances",
+                          "transformer_equivalent",
+                          "solve_operating_point",
                           "absolute_to_relative_permeability",
                           "average_abs_current_density",
                           "build_mesh",
@@ -84,6 +94,7 @@ __all__ = [
                           "electric_field_from_a_phi",
                           "electric_loss_density",
                           "inductance",
+                          "inductance_matrix",
                           "integrated_current",
                           "litz_loss",
                           "litz_transport_loss_density",
@@ -107,8 +118,10 @@ __all__ = [
                           "solve_voltage_excitation",
                           "total_litz_loss_density",
                           "winding_copper_losses",
+                          "winding_complex_powers",
                           "winding_flux_linkage",
                           "winding_flux_linkages",
+                          "winding_terminal_voltages",
                           "winding_litz_losses",
                           "winding_voltages",
 ]

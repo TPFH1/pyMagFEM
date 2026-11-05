@@ -292,6 +292,7 @@ class FrequencyDomainResult:
         kwargs.setdefault("a_phi", self.a_phi)
         kwargs.setdefault("current_densities", self.current_densities)
         kwargs.setdefault("magnetic_field", self.magnetic_field_intensity())
+        kwargs.setdefault("litz_properties", self.litz_properties)
         kwargs.setdefault("nonlinear_material", self.nonlinear_material)
         kwargs.setdefault("frequency", self.frequency_hz)
         return plot_physical_field(self.mesh, field, color_scale=color_scale, **kwargs)

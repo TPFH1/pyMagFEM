@@ -328,6 +328,57 @@ def test_result_plot_exposes_and_forwards_color_scale():
         result.plot_physical_field(PhysicalField.J, color_scale="log")
 
 
+def test_result_plot_uses_per_conductor_litz_properties_for_loss_density():
+    from matplotlib.figure import Figure
+
+    from fem import FrequencyDomainResult, LitzProperties, PhysicalField
+
+    mesh = _mesh()
+    result = FrequencyDomainResult.from_solution(
+        FEMModel(),
+        mesh,
+        np.zeros(5),
+        {"conductor_0": np.ones(4, dtype=complex)},
+    )
+    result.frequency_hz = 100.0
+    result.litz_properties = {
+        "conductor_0": LitzProperties(
+            absolute_permeability=1.0 - 0.1j,
+            resistivity=2.0 + 0.0j,
+            conductivity=0.5 + 0.0j,
+            dimensionless_frequency=1.0,
+        ),
+    }
+    magnetic_field = np.asarray([
+        [1.0, 0.0],
+        [2.0, 0.0],
+        [3.0, 0.0],
+        [4.0, 0.0],
+    ])
+
+    proximity_figure = Figure()
+    proximity_axis = proximity_figure.subplots()
+    result.plot_physical_field(
+        PhysicalField.MAG_LOSS_DENSITY,
+        magnetic_field=magnetic_field,
+        ax=proximity_axis,
+    )
+    proximity_density = np.asarray(proximity_axis.collections[0].get_array())
+    assert np.all(proximity_density > 0.0)
+    assert np.all(np.diff(proximity_density) > 0.0)
+
+    total_figure = Figure()
+    total_axis = total_figure.subplots()
+    result.plot_physical_field(
+        PhysicalField.LOSS_DENSITY,
+        magnetic_field=magnetic_field,
+        ax=total_axis,
+    )
+    total_density = np.asarray(total_axis.collections[0].get_array())
+    assert np.all(total_density > proximity_density)
+    assert np.all(np.diff(total_density) > 0.0)
+
+
 def test_magnetic_field_uses_relative_permeability_once():
     mesh = _mesh()
     a_phi = np.array([0.0, 0.1, 0.2, 0.3, 0.15])

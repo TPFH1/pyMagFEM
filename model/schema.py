@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,22 @@ class TurnPlacement:
     circuit: str = "circuit_1"
     current_sign: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    parallel_path: int | None = None
+    current_fraction: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.parallel_path is not None and (
+            isinstance(self.parallel_path, bool)
+            or not isinstance(self.parallel_path, int)
+            or self.parallel_path < 0
+        ):
+            raise ValueError("parallel_path must be a non-negative integer")
+        if self.current_fraction is not None and (
+            isinstance(self.current_fraction, bool)
+            or not isfinite(self.current_fraction)
+            or not 0.0 < self.current_fraction <= 1.0
+        ):
+            raise ValueError("current_fraction must be finite and in (0, 1]")
 
 
 @dataclass
@@ -188,8 +205,10 @@ class FEMModel:
         conductor_heights = []
         conductor_radii = []
         conductors_by_name = {item.name: item for item in conductors}
+        conductor_parallel_paths = []
+        conductor_parallel_path_ids = []
         for winding in self.windings:
-            for turn in winding.turns:
+            for turn_index, turn in enumerate(winding.turns):
                 definition = conductors_by_name.get(
                     turn.conductor or winding.conductor, conductor
                 )
@@ -213,7 +232,17 @@ class FEMModel:
                 winding_names.append(winding.name)
                 winding_circuits.append(turn.circuit or winding.circuit)
                 conductor_signs.append(float(turn.current_sign))
-                conductor_current_fractions.append(1.0 / winding.parallel_paths)
+                conductor_current_fractions.append(
+                    turn.current_fraction
+                    if turn.current_fraction is not None
+                    else 1.0 / winding.parallel_paths
+                )
+                conductor_parallel_paths.append(winding.parallel_paths)
+                conductor_parallel_path_ids.append(
+                    turn.parallel_path
+                    if turn.parallel_path is not None
+                    else turn_index % winding.parallel_paths
+                )
         return {
             "core_type": self.geometry.core.extra.get("core_type", "Single"),
             "p_outer": self.geometry.core.corners,
@@ -224,6 +253,8 @@ class FEMModel:
             "p_cond_center_1": turn_centers,
             "conductor_signs": conductor_signs,
             "conductor_current_fractions": conductor_current_fractions,
+            "conductor_parallel_paths": conductor_parallel_paths,
+            "conductor_parallel_path_ids": conductor_parallel_path_ids,
             "conductor_windings": winding_names,
             "conductor_circuits": winding_circuits,
             "radius_cond_1": radius,
@@ -285,9 +316,22 @@ def normalize(source: str | Path | Mapping[str, Any] | FEMModel) -> FEMModel:
         core = _region(g.get("core", {}), "core", "core")
         window = _region(g.get("winding_window", g.get("window", {})), "winding_window")
         gaps = [_region(x, f"air_gap_{i + 1}") for i, x in enumerate(g.get("air_gaps", []))]
-        geometry = Geometry(g.get("coordinate_system", "axisymmetric_rz"), core, gaps,
-                            [_region(x, f"shunt_{i + 1}") for i, x in enumerate(g.get("shunts", []))], window,
-                            {k: v for k, v in g.items() if k not in {"coordinate_system", "core", "air_gaps", "shunts", "winding_window", "window"}})
+        geometry_extra = dict(g.get("extra", {}))
+        geometry_extra.update({
+            key: value
+            for key, value in g.items()
+            if key not in {
+                "coordinate_system", "core", "air_gaps", "shunts", "winding_window", "window", "extra",
+            }
+        })
+        geometry = Geometry(
+            g.get("coordinate_system", "axisymmetric_rz"),
+            core,
+            gaps,
+            [_region(x, f"shunt_{i + 1}") for i, x in enumerate(g.get("shunts", []))],
+            window,
+            geometry_extra,
+        )
         model = FEMModel(schema=str(data.get("schema", "pyMagBEM")), version=version, geometry=geometry)
         model.materials = [
             Material(
@@ -306,7 +350,28 @@ def normalize(source: str | Path | Mapping[str, Any] | FEMModel) -> FEMModel:
             for x in data.get("materials", [])
         ]
         model.conductors = [Conductor(str(x["name"]), **{k: x[k] for k in ("shape", "construction", "radius", "width", "height", "strands", "strand_diameter", "material") if k in x}, metadata=dict(x.get("metadata", {}))) for x in data.get("conductors", [])]
-        model.windings = [Winding(str(x["name"]), [TurnPlacement(list(t["center"]), t.get("conductor", "conductor_1"), t.get("circuit", "circuit_1"), float(t.get("current_sign", 1.0)), dict(t.get("metadata", {}))) for t in x.get("turns", [])], x.get("conductor", "conductor_1"), x.get("circuit", "circuit_1"), dict(x.get("metadata", {})), parallel_paths=x.get("parallel_paths", 1)) for x in data.get("windings", [])]
+        model.windings = [
+            Winding(
+                str(x["name"]),
+                [
+                    TurnPlacement(
+                        list(t["center"]),
+                        t.get("conductor", "conductor_1"),
+                        t.get("circuit", "circuit_1"),
+                        float(t.get("current_sign", 1.0)),
+                        dict(t.get("metadata", {})),
+                        t.get("parallel_path"),
+                        t.get("current_fraction"),
+                    )
+                    for t in x.get("turns", [])
+                ],
+                x.get("conductor", "conductor_1"),
+                x.get("circuit", "circuit_1"),
+                dict(x.get("metadata", {})),
+                parallel_paths=x.get("parallel_paths", 1),
+            )
+            for x in data.get("windings", [])
+        ]
         model.circuits = [Circuit(str(x["name"]), int(x.get("turns", 0)), float(x.get("current", 0.0)), x.get("voltage"), dict(x.get("metadata", {}))) for x in data.get("circuits", [])]
         model.metadata = Metadata(**{k: data.get("metadata", {}).get(k, getattr(Metadata(), k)) for k in ("name", "description", "author", "units")}, extra=dict(data.get("metadata", {}).get("extra", {})))
         model.excitation = Excitation(**{k: data.get("excitation", {}).get(k, getattr(Excitation(), k)) for k in ("type", "frequency", "phasor_convention", "time", "circuits")}, metadata=dict(data.get("excitation", {}).get("metadata", {})))
@@ -348,7 +413,7 @@ def validate(model: FEMModel | Mapping[str, Any]) -> FEMModel:
         if unknown:
             raise ValueError(f"excitation references unknown circuits: {sorted(unknown)}")
     for conductor in model.conductors:
-        if conductor.shape not in {"round", "rectangle"}:
+        if conductor.shape not in {"round", "rectangular"}:
             raise ValueError(f"unsupported conductor shape: {conductor.shape}")
         if conductor.construction not in {"solid", "litz"}:
             raise ValueError(f"unsupported conductor construction: {conductor.construction}")

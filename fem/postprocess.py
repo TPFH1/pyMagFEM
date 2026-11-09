@@ -179,7 +179,7 @@ def analytical_dc_winding_resistances(
     materials_by_name = {material.name: material for material in component.materials}
     resistances_ohm = {}
     for winding in component.windings:
-        bundle_resistance_sum_ohm = 0.0
+        terminal_resistance_ohm = 0.0
         for turn in winding.turns:
             conductor_name = turn.conductor or winding.conductor
             conductor = conductors_by_name.get(conductor_name)
@@ -210,13 +210,17 @@ def analytical_dc_winding_resistances(
 
             strand_area_m2 = np.pi * conductor.strand_diameter**2 / 4.0
             copper_area_m2 = conductor.strands * strand_area_m2
-            bundle_resistance_sum_ohm += (
+            turn_resistance_ohm = (
                 2.0 * np.pi * turn_radius_m
                 / (material.conductivity * copper_area_m2)
             )
-        resistances_ohm[winding.name] = (
-            bundle_resistance_sum_ohm / winding.parallel_paths**2
-        )
+            current_fraction = (
+                turn.current_fraction
+                if turn.current_fraction is not None
+                else 1.0 / winding.parallel_paths
+            )
+            terminal_resistance_ohm += turn_resistance_ohm * current_fraction**2
+        resistances_ohm[winding.name] = terminal_resistance_ohm
     return resistances_ohm
 
 

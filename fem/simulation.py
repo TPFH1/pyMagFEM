@@ -19,10 +19,10 @@ from .postprocess import (
     core_losses,
     magnetic_field_intensity,
     magnetic_flux_density,
+    winding_complex_powers,
     winding_copper_losses,
     winding_flux_linkages,
     winding_litz_losses,
-    winding_complex_powers,
     winding_terminal_voltages,
     winding_voltages,
 )
@@ -519,9 +519,14 @@ class FrequencyDomainSimulation:
                     current_modes[name] = "fixed_current_density"
                     circuit = turn.circuit or winding.circuit
                     current = complex(currents.get(circuit, currents.get(winding.name, 0.0)))
+                    current_fraction = (
+                        turn.current_fraction
+                        if turn.current_fraction is not None
+                        else 1.0 / winding.parallel_paths
+                    )
                     fixed_current_density[name] = (
-                        current * turn.current_sign
-                        / (winding.parallel_paths * conductor_area(mesh, conductor_index))
+                        current * turn.current_sign * current_fraction
+                        / conductor_area(mesh, conductor_index)
                     )
                 conductor_index += 1
         solve_options = {}

@@ -23,8 +23,8 @@ from fem import (
     solve_combined,
     solve_frequency_domain,
     total_litz_loss_density,
-    winding_flux_linkages,
     winding_complex_powers,
+    winding_flux_linkages,
     winding_litz_losses,
     winding_terminal_voltages,
     winding_voltages,
@@ -105,8 +105,7 @@ def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_request
 def test_voltage_simulation_converges_and_forwards_nonlinear_materials(monkeypatch):
     from types import SimpleNamespace
 
-    from fem import FrequencyDomainSimulation
-    from fem import NonlinearCoreMaterial
+    from fem import FrequencyDomainSimulation, NonlinearCoreMaterial
 
     component = FEMModel(
         circuits=[Circuit("primary")],
@@ -211,7 +210,7 @@ def test_result_report_forwards_complex_terminal_current(monkeypatch):
         {"conductor_0": np.ones(4, dtype=complex)},
     )
     monkeypatch.setattr(result, "winding_flux_linkages", lambda: {"primary": 3.0 + 4.0j})
-    monkeypatch.setattr(result, "winding_voltages", lambda: {})
+    monkeypatch.setattr(result, "winding_voltages", dict)
     monkeypatch.setattr(result, "winding_losses", lambda: {"primary": object()})
     monkeypatch.setattr(result, "core_losses", lambda: (0.0, 0.0, 0.0))
     monkeypatch.setattr(result, "magnetic_flux_density", lambda: np.zeros((4, 2)))
@@ -278,6 +277,7 @@ def test_analytical_dc_winding_resistances_sums_bundle_turns_and_parallel_paths(
 
 def test_analytical_dc_winding_resistances_requires_litz_data():
     import pytest
+
     from fem import analytical_dc_winding_resistances
 
     component = FEMModel(
@@ -332,14 +332,33 @@ def test_conductor_interior_growth_rejects_invalid_factors():
 
 
 def test_conductor_interior_mesh_growth_is_limited_without_refining_core():
-    from model import InsulationSpec, RadialWindingSpec, build_concentric_model
+    from model import (
+        ChamberWindingAssignment,
+        InsulationSpec,
+        RoundConductor,
+        WindingDefinition,
+        build_chambered_model,
+        core_for_window,
+        initial_chamber,
+    )
 
     conductor_radius = 0.002
     boundary_size = 0.00025
-    component = build_concentric_model(
+    core = core_for_window(
         core_area=100e-6,
-        windings=(RadialWindingSpec("primary", RoundConductor("copper", radius=conductor_radius), 1),),
-        insulation=InsulationSpec(0.001, 0.001, 0.001, 0.001),
+        window_outer_radius=0.012,
+        window_half_height=0.008,
+    )
+    insulation = InsulationSpec(0.001, 0.001, 0.001, 0.001)
+    chamber = initial_chamber(core, insulation)
+    component = build_chambered_model(
+        core=core,
+        windings=(WindingDefinition(
+            "primary", RoundConductor("copper", radius=conductor_radius), 1,
+        ),),
+        root_chamber=chamber,
+        assignments=(ChamberWindingAssignment(chamber, "primary", 1),),
+        insulation=insulation,
     )
     mesh = build_mesh(component, max_size=0.003, conductor_geometry_size=boundary_size,
                       physics_adaptive=False, conductor_max_growth=1.5)
@@ -623,16 +642,32 @@ def test_winding_litz_losses_returns_per_turn_and_total():
 
 def test_parallel_litz_report_uses_litz_losses():
     from fem import FrequencyDomainSimulation
-    from model import Constructor, CoreSpec, InsulationSpec
+    from model import (
+        ChamberWindingAssignment,
+        CoreSpec,
+        InsulationSpec,
+        RoundConductor,
+        WindingDefinition,
+        build_chambered_model,
+        initial_chamber,
+    )
 
     core = CoreSpec("core", "core", 0.025, 0.025, 0.012, 0.020, 0.020)
-    winding = Constructor.place_winding(
-        core=core, insulation=InsulationSpec(w2w=0.0005), name="secondary",
-        conductor=RoundConductor("litz", radius=0.00165, construction="litz",
-                                 strands=600, strand_diameter=0.0001),
-        circuit="secondary", turns=1, radial_columns=1, parallel_paths=4,
+    insulation = InsulationSpec(w2w=0.0005)
+    chamber = initial_chamber(core, insulation)
+    conductor = RoundConductor(
+        "litz", radius=0.00165, construction="litz",
+        strands=600, strand_diameter=0.0001,
     )
-    component = Constructor(core, (winding,)).build()
+    component = build_chambered_model(
+        core=core,
+        windings=(WindingDefinition("secondary", conductor, 1),),
+        root_chamber=chamber,
+        assignments=(ChamberWindingAssignment(
+            chamber, "secondary", 1, parallel_paths=4,
+        ),),
+        insulation=insulation,
+    )
     component.excitation.frequency = 200e3
     component.excitation.circuits = {"secondary": 4.0}
     simulation = FrequencyDomainSimulation(component)
@@ -819,16 +854,32 @@ def test_parallel_current_targets_and_flux_linkages():
 
 def test_parallel_litz_simulation_splits_terminal_current():
     from fem import FrequencyDomainSimulation
-    from model import Constructor, CoreSpec, InsulationSpec
+    from model import (
+        ChamberWindingAssignment,
+        CoreSpec,
+        InsulationSpec,
+        RoundConductor,
+        WindingDefinition,
+        build_chambered_model,
+        initial_chamber,
+    )
 
     core = CoreSpec("core", "core", 0.025, 0.025, 0.012, 0.020, 0.020)
-    winding = Constructor.place_winding(
-        core=core, insulation=InsulationSpec(w2w=0.0005), name="secondary",
-        conductor=RoundConductor("litz", radius=0.00165, construction="litz",
-                                 strands=600, strand_diameter=0.0001),
-        circuit="secondary", turns=1, radial_columns=1, parallel_paths=4,
+    insulation = InsulationSpec(w2w=0.0005)
+    chamber = initial_chamber(core, insulation)
+    conductor = RoundConductor(
+        "litz", radius=0.00165, construction="litz",
+        strands=600, strand_diameter=0.0001,
     )
-    component = Constructor(core, (winding,)).build()
+    component = build_chambered_model(
+        core=core,
+        windings=(WindingDefinition("secondary", conductor, 1),),
+        root_chamber=chamber,
+        assignments=(ChamberWindingAssignment(
+            chamber, "secondary", 1, parallel_paths=4,
+        ),),
+        insulation=insulation,
+    )
     component.excitation.frequency = 200e3
     component.excitation.circuits = {"secondary": 4.0}
     simulation = FrequencyDomainSimulation(component)

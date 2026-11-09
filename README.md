@@ -51,14 +51,55 @@ After updating an existing editable installation, rerun
 
 ### Equal-Current Parallel Windings
 
-Use the high-level `model.RadialWindingSpec` and
-`model.build_concentric_model` APIs to describe windings. For example, a
-specification with `turns=2` and `parallel_paths=4` places eight physical
-conductor bundles representing two series turns and four ideal parallel
-paths. Excitation currents are terminal currents: each physical bundle carries
-one quarter of the winding current. Flux linkage is weighted by the same
-factor, so inductance matrices refer to the winding terminals. The default
-`parallel_paths=1` retains series-winding behaviour.
+Use a high-level winding scheme to arrange sections, then let the wrapper
+derive chamber and physical window dimensions from the winding envelope:
+
+```python
+insulation = model.InsulationSpec(
+	c2w_left=core_clearance_m,
+	c2w_right=outer_clearance_m,
+	c2w_top=core_clearance_m,
+	c2w_bottom=core_clearance_m,
+)
+primary = model.WindingDefinition("primary", primary_conductor, turns=8)
+secondary = model.WindingDefinition("secondary", secondary_conductor, turns=2)
+windings = (primary, secondary)
+
+layout = model.RadialStack(
+	sections=(
+		model.WindingSection(
+			"primary", turns=8, parallel_paths=1, layers=1,
+			h_loc=model.Align.Left, v_loc=model.Align.Center,
+		),
+		model.WindingSection(
+			"secondary", turns=2, parallel_paths=4, layers=1,
+			h_loc=model.Align.Right, v_loc=model.Align.Center,
+		),
+	),
+	split_ins=interwinding_insulation_m,
+).layout(
+	core_area=core_area_m2,
+	windings=windings,
+	insulation=insulation,
+)
+print(layout.window_outer_radius_m, layout.window_height_m)
+component = layout.build_model()
+```
+
+For an axial scheme, supply sections in top-to-bottom order to
+`model.AxialStack`; for example, primary then secondary places the primary
+above the secondary. Either wrapper supports repeated winding sections, such
+as primary / secondary / primary. `WindingSection.layers` is the radial
+winding-layer count within that section, not the number of chambers or the
+number of parallel paths. The wrappers return both usable chamber dimensions
+and physical window dimensions; core-to-winding clearances are included when
+the physical window is sized.
+
+Electrical turn counts are defined once by `WindingDefinition` and apportioned
+across its sections. Each section specifies its own `parallel_paths` and
+`layers`; path counts must agree across sections of one logical winding. Paths
+share current equally at the terminals. Two series turns with four paths create
+eight physical bundles, each carrying one quarter of the terminal current.
 
 This assumes perfect equal sharing, not an electrical network solution for
 unequal branch currents or circulating currents. Physical bundle placements
@@ -187,7 +228,7 @@ extending pyMagFEM or when a factory cannot express the required geometry.
 ### Winding Insulation Matrix
 
 `model.InsulationSpec` accepts an optional symmetric `w2w_matrix` in metres,
-ordered like the windings passed to the constructor or concentric factory:
+ordered like the winding definitions:
 
 ```python
 insulation = model.InsulationSpec(
@@ -202,16 +243,15 @@ insulation = model.InsulationSpec(
 )
 ```
 
-`ins_11` and `ins_22` set physical bundle spacing within each winding.
-`ins_12` sets the primary-to-secondary envelope clearance. Diagonal values
-control axial pitch/stack height; adjacent off-diagonal values control radial
-spacing and window width. The constructor also validates pairwise clearances.
-The matrix must be finite, non-negative, square, symmetric, and match the
-winding count. Saved models record it and its winding order in core metadata.
+`ins_11` and `ins_22` can be used as same-winding conductor spacing when
+building chamber assignments. Split insulation is specified explicitly on
+`split_chamber`; it is not inferred from assignment order. The matrix must be
+finite, non-negative, square, symmetric, and match the winding count.
 
 Without a matrix, scalar `w2w` remains supported and applies to all pairs.
-For `Constructor.place_winding` with a matrix, `winding_index` selects its
-diagonal; `build_concentric_model` selects the entries automatically.
+Chamber assignments use the matching matrix diagonal for same-winding bundle
+spacing by default. `WindingDefinition.turn_insulation` can override that
+spacing for a particular winding.
 
 ### Conductor Mesh Grading
 
@@ -235,25 +275,14 @@ preserves the previous grading. The same keyword is accepted by
 
 ### Higher-Level Model and Analysis APIs
 
-For application code, prefer this factory over manually assembling
-`FEMModel`, `CoreSpec`, or `Constructor` objects:
-
-`model.RadialWindingSpec` describes one single-column winding, including
-electrical turns, parallel paths, and `bottom`, `center`, or `top` alignment.
-Pass windings in inside-to-outside order to `model.build_concentric_model`:
-
-```python
-component = model.build_concentric_model(
-	core_area=core_area_m2,
-	windings=winding_specs,
-	insulation=insulation,
-	air_gap_length=air_gap_length_m,
-)
-```
-
-The factory derives the window from the physical bundle stacks and builds
-an equal-area centre/outer-leg core with equal minimum yoke cross section.
-Dimensions, materials, and excitation frequency belong to the caller.
+The scheme wrappers are the application-level geometry constructors.
+`RadialStack` orders sections inner-to-outer; `AxialStack` orders sections
+top-to-bottom. Each section independently selects its winding, electrical
+turns, parallel paths, radial `layers`, `h_loc`, and `v_loc`. The wrappers
+create placement-only chambers, derive the physical window from the required
+winding envelope and clearances, then compile to the regular FEM model. Direct
+`split_chamber` and `build_chambered_model` remain available for arrangements
+that do not fit these common scheme patterns.
 
 ```python
 equivalent = fem.transformer_equivalent(

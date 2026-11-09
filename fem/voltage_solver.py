@@ -31,7 +31,13 @@ def solve_voltage_excitation(
     ]
     if not names:
         raise ValueError(f"unknown winding {winding!r}")
-    turn_count = len(names) if turns is None else turns
+    all_fractions = mesh.geometry.get("conductor_current_fractions", [1.0] * len(winding_names))
+    terminal_turns = sum(
+        float(all_fractions[index])
+        for index, name in enumerate(winding_names)
+        if name == winding and index < len(all_fractions)
+    )
+    turn_count = terminal_turns if turns is None else turns
     if turn_count <= 0:
         raise ValueError("turns must be positive")
     source_voltage = complex(voltage)
@@ -44,7 +50,11 @@ def solve_voltage_excitation(
         phasor_convention=phasor_convention,
         return_voltages=True,
     )
-    solved_source = sum(voltages.get(name, 0.0j) for name in names)
+    solved_source = sum(
+        voltages.get(name, 0.0j) * float(all_fractions[index])
+        for index, name in enumerate(winding_names)
+        if index < len(all_fractions) and name == winding
+    )
     if abs(solved_source) == 0.0:
         solved_source = sum(
             complex(voltage) for voltage in voltages.values()

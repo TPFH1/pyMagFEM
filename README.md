@@ -117,8 +117,8 @@ python -m jupyter lab
 The minimal inductor example is a good starting point:
 [`notebooks/example_inductor_minimal.ipynb`](notebooks/example_inductor_minimal.ipynb).
 [`notebooks/example_inductor.ipynb`](notebooks/example_inductor.ipynb) demonstrates
-the high-level inductor factory with selectable current/voltage excitation and
-N49/custom-linear core material. The transformer workflow is shown in
+the high-level inductor factory, compares current-fed and voltage-fed results,
+and lets you select N49 or a custom linear core. The transformer workflow is shown in
 [`notebooks/example_transformer.ipynb`](notebooks/example_transformer.ipynb).
 
 ## Model and solver structure
@@ -266,6 +266,11 @@ result = fem.solve_operating_point(
 )
 losses_w = result.loss_summary()
 ```
+
+For voltage-driven operation, use `simulation.solve_voltage(voltage_v,
+winding="primary", nonlinear_materials=...)`. It iteratively adjusts the
+terminal current to meet the requested voltage phasor, reuses the simulation
+mesh, and supports the same nonlinear core materials as `solve()`.
 
 The inductive T-model uses `sqrt(L11/L22)` and a primary-side magnetizing
 branch. Its external-secondary series term is referred by the ratio squared.

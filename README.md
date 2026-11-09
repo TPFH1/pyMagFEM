@@ -116,7 +116,7 @@ python -m jupyter lab
 
 The minimal inductor example is a good starting point:
 [`notebooks/example_inductor_minimal.ipynb`](notebooks/example_inductor_minimal.ipynb).
-Additional notebooks demonstrate static, frequency-domain, voltage-driven,
+Additional notebooks demonstrate frequency-domain, voltage-driven,
 nonlinear-material, and transformer workflows.
 
 ## Model and solver structure
@@ -138,6 +138,23 @@ The main packages are:
 - [`fem/nonlinear_solver.py`](fem/nonlinear_solver.py): field-dependent material analysis;
 - [`fem/postprocess.py`](fem/postprocess.py): field, energy, flux-linkage, and loss quantities;
 - [`fem/plot.py`](fem/plot.py): mesh and field visualization.
+
+### Advanced Magnetostatic Solve
+
+For static analyses, the lower-level solver accepts a mesh and current-density
+map. This is an advanced path; frequency-domain application workflows should
+prefer `fem.FrequencyDomainSimulation`.
+
+```python
+component = model.load(model_data)
+mesh = fem.build_mesh(component, max_size=mesh_size_m)
+a_phi = fem.solve_axisymmetric(
+	mesh,
+	relative_permeability={"core": core_relative_permeability},
+	current_density={"winding": current_density_a_per_m2},
+)
+flux_density = fem.magnetic_flux_density(mesh, a_phi)
+```
 
 ## Materials
 

@@ -410,6 +410,75 @@ class FrequencyDomainSimulation:
             for circuit in self.model.circuits
         }
 
+    def solve_voltage(
+        self,
+        voltage_v: complex,
+        *,
+        winding: str,
+        nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
+        max_iterations: int = 20,
+        tolerance: float = 1e-3,
+        relaxation: float = 0.7,
+    ) -> FrequencyDomainResult:
+        """Solve a winding to a target terminal-voltage phasor.
+
+        Current is iteratively adjusted using the measured terminal voltage.
+        Each trial uses the normal frequency-domain simulation path, including
+        nonlinear material iteration when ``nonlinear_materials`` is supplied.
+        The input model is not mutated and its mesh is reused across trials.
+        """
+        voltage_v = complex(voltage_v)
+        if not np.isfinite(voltage_v.real) or not np.isfinite(voltage_v.imag):
+            raise ValueError("voltage_v must be finite")
+        if abs(voltage_v) == 0.0:
+            raise ValueError("voltage_v must be non-zero")
+        if isinstance(max_iterations, bool) or max_iterations < 1:
+            raise ValueError("max_iterations must be a positive integer")
+        if not np.isfinite(tolerance) or tolerance <= 0.0:
+            raise ValueError("tolerance must be finite and positive")
+        if not np.isfinite(relaxation) or not 0.0 < relaxation <= 1.0:
+            raise ValueError("relaxation must be in (0, 1]")
+
+        winding_spec = next(
+            (item for item in self.model.windings if item.name == winding), None
+        )
+        if winding_spec is None or not winding_spec.circuit:
+            raise ValueError(f"unknown winding or missing circuit: {winding!r}")
+        circuit = winding_spec.circuit
+
+        mesh = self.mesh if self.mesh is not None else self.create_mesh()
+        currents = self._currents()
+        current = complex(currents.get(circuit, 0.0))
+        if abs(current) == 0.0:
+            current = 1.0 + 0.0j
+
+        for _iteration in range(max_iterations):
+            component = deepcopy(self.model)
+            trial_currents = dict(currents)
+            trial_currents[circuit] = current
+            component.excitation.circuits = trial_currents
+            trial = FrequencyDomainSimulation(component, mesh=mesh).solve(
+                nonlinear_materials=nonlinear_materials,
+            )
+            terminal_voltage_v = trial.winding_terminal_voltages().get(winding)
+            if terminal_voltage_v is None:
+                raise ValueError(f"no terminal voltage was produced for winding {winding!r}")
+            if not np.isfinite(terminal_voltage_v.real) or not np.isfinite(terminal_voltage_v.imag):
+                raise RuntimeError("voltage-driven solve produced a non-finite terminal voltage")
+            if abs(terminal_voltage_v) == 0.0:
+                raise RuntimeError("voltage-driven solve produced zero terminal voltage")
+            relative_error = abs(terminal_voltage_v - voltage_v) / abs(voltage_v)
+            if relative_error <= tolerance:
+                self.mesh = mesh
+                return trial
+
+            correction = voltage_v / terminal_voltage_v
+            current *= (1.0 - relaxation) + relaxation * correction
+
+        raise RuntimeError(
+            f"voltage excitation did not converge within {max_iterations} iterations"
+        )
+
     def solve(
         self,
         *,

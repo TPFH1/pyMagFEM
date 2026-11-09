@@ -116,8 +116,10 @@ python -m jupyter lab
 
 The minimal inductor example is a good starting point:
 [`notebooks/example_inductor_minimal.ipynb`](notebooks/example_inductor_minimal.ipynb).
-Additional notebooks demonstrate frequency-domain, voltage-driven,
-nonlinear-material, and transformer workflows.
+[`notebooks/example_inductor.ipynb`](notebooks/example_inductor.ipynb) demonstrates
+the high-level inductor factory with selectable current/voltage excitation and
+N49/custom-linear core material. The transformer workflow is shown in
+[`notebooks/example_transformer.ipynb`](notebooks/example_transformer.ipynb).
 
 ## Model and solver structure
 

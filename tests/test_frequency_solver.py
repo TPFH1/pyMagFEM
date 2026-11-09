@@ -102,6 +102,64 @@ def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_request
     assert loss_options["nonlinear_material"] is nonlinear_core
 
 
+def test_voltage_simulation_converges_and_forwards_nonlinear_materials(monkeypatch):
+    from types import SimpleNamespace
+
+    from fem import FrequencyDomainSimulation
+    from fem import NonlinearCoreMaterial
+
+    component = FEMModel(
+        circuits=[Circuit("primary")],
+        windings=[Winding("primary", circuit="primary")],
+    )
+    simulation = FrequencyDomainSimulation(component, mesh=_mesh())
+    nonlinear_core = NonlinearCoreMaterial(
+        relative_permeability=lambda values: np.ones_like(values, dtype=complex),
+        conductivity=0.0 + 0.0j,
+        temperature=25.0,
+        frequency=1e3,
+    )
+    trial_currents = []
+    forwarded_materials = []
+
+    def fake_solve(trial_simulation, *, nonlinear_materials=None):
+        trial_current = trial_simulation.model.excitation.circuits["primary"]
+        trial_currents.append(trial_current)
+        forwarded_materials.append(nonlinear_materials)
+        return SimpleNamespace(
+            winding_terminal_voltages=lambda: {"primary": 2.0 * trial_current}
+        )
+
+    monkeypatch.setattr(FrequencyDomainSimulation, "solve", fake_solve)
+    result = simulation.solve_voltage(
+        10.0,
+        winding="primary",
+        nonlinear_materials={"core": nonlinear_core},
+        relaxation=1.0,
+    )
+
+    assert result.winding_terminal_voltages()["primary"] == 10.0
+    assert trial_currents == [1.0 + 0.0j, 5.0 + 0.0j]
+    assert all(materials == {"core": nonlinear_core} for materials in forwarded_materials)
+
+
+def test_voltage_simulation_rejects_zero_or_unknown_winding():
+    import pytest
+
+    from fem import FrequencyDomainSimulation
+
+    component = FEMModel(
+        circuits=[Circuit("primary")],
+        windings=[Winding("primary", circuit="primary")],
+    )
+    simulation = FrequencyDomainSimulation(component, mesh=_mesh())
+
+    with pytest.raises(ValueError, match="non-zero"):
+        simulation.solve_voltage(0.0, winding="primary")
+    with pytest.raises(ValueError, match="unknown winding"):
+        simulation.solve_voltage(1.0, winding="secondary")
+
+
 def test_transformer_report_separates_losses_and_skips_zero_current_inductance(monkeypatch):
     from fem.simulation import FrequencyDomainResult
 
@@ -130,6 +188,38 @@ def test_transformer_report_separates_losses_and_skips_zero_current_inductance(m
     assert set(losses) == {"primary", "secondary"}
     assert len(losses["primary"].per_turn) == len(losses["secondary"].per_turn) == 1
     assert np.isclose(losses["secondary"].total, 4.0 * losses["primary"].total)
+
+
+def test_result_report_forwards_complex_terminal_current(monkeypatch):
+    from fem.simulation import FrequencyDomainResult
+
+    component = FEMModel(
+        circuits=[Circuit("primary")],
+        windings=[
+            Winding(
+                "primary",
+                turns=[TurnPlacement(center=[1.5, 0.5])],
+                circuit="primary",
+            )
+        ],
+    )
+    component.excitation.circuits = {"primary": 1.0 + 2.0j}
+    result = FrequencyDomainResult.from_solution(
+        component,
+        _mesh(),
+        np.zeros(5),
+        {"conductor_0": np.ones(4, dtype=complex)},
+    )
+    monkeypatch.setattr(result, "winding_flux_linkages", lambda: {"primary": 3.0 + 4.0j})
+    monkeypatch.setattr(result, "winding_voltages", lambda: {})
+    monkeypatch.setattr(result, "winding_losses", lambda: {"primary": object()})
+    monkeypatch.setattr(result, "core_losses", lambda: (0.0, 0.0, 0.0))
+    monkeypatch.setattr(result, "magnetic_flux_density", lambda: np.zeros((4, 2)))
+    monkeypatch.setattr("fem.report.build_result_report", lambda *args, **kwargs: kwargs)
+
+    report = result.report()
+
+    assert report["currents_a"] == {"primary": 1.0 + 2.0j}
 
 
 def test_loss_summary_does_not_double_count_transport_and_proximity(monkeypatch):
@@ -450,6 +540,27 @@ def test_result_report_is_json_safe_and_supports_named_losses():
     assert set(data["losses"]["cores"]) == {"core_a", "core_b"}
     assert data["inductance"]["primary"]["magnitude"] == np.sqrt(5.0) * 1e-6
     assert data["voltages"]["turns"]["conductor_0"]["phase_deg"] == np.degrees(np.arctan2(2.0, 1.0))
+
+
+def test_result_report_preserves_complex_terminal_current(capsys):
+    report = build_result_report(
+        FEMModel(),
+        _mesh(),
+        frequency_hz=900_000.0,
+        currents_a={"primary": 1.0 + 2.0j},
+        current_densities={"conductor_0": np.full(4, 1.0 + 2.0j)},
+        flux_density=np.ones((4, 2)),
+    )
+
+    current = report.to_dict()["simulation"]["currents_a"]["primary"]
+    assert current == {
+        "real": 1.0,
+        "imaginary": 2.0,
+        "magnitude": np.sqrt(5.0),
+        "phase_deg": np.degrees(np.arctan2(2.0, 1.0)),
+    }
+    report.print()
+    assert "Current primary: 1.000 + j2.000 A" in capsys.readouterr().out
 
 
 def test_complex_field_and_loss_are_finite():

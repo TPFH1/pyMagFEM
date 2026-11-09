@@ -33,6 +33,11 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _report_current(value: float | complex) -> float | complex:
+    current = complex(value)
+    return current if current.imag != 0.0 else float(current.real)
+
+
 def _loss_data(losses: Any) -> dict[str, Any]:
     if losses is None:
         return {}
@@ -82,7 +87,15 @@ class SimulationResultReport:
         mesh = self.data["mesh"]
         print(f"Frequency: {simulation['frequency_hz']:,.0f} Hz")
         for name, current in simulation["currents_a"].items():
-            print(f"Current {name}: {current:.3f} A")
+            phasor = complex(current)
+            if phasor.imag == 0.0:
+                print(f"Current {name}: {phasor.real:.3f} A")
+            else:
+                imaginary_sign = "+" if phasor.imag >= 0.0 else "-"
+                print(
+                    f"Current {name}: {phasor.real:.3f} {imaginary_sign} "
+                    f"j{abs(phasor.imag):.3f} A ({abs(phasor):.3f} A peak)"
+                )
         print(f"Mesh: {mesh['nodes']} nodes, {mesh['triangles']} triangles")
         for name, result in self.data["conductors"].items():
             print(
@@ -151,7 +164,7 @@ def build_result_report(
     mesh: AxisymmetricMesh,
     *,
     frequency_hz: float,
-    currents_a: float | Mapping[str, float],
+    currents_a: float | complex | Mapping[str, float | complex],
     current_densities: Mapping[str, np.ndarray],
     flux_density: np.ndarray,
     inductance_h: complex | Mapping[str, complex] | None = None,
@@ -169,9 +182,9 @@ def build_result_report(
     numbers of windings and core parts without changing the report schema.
     """
     current_map = (
-        {"current": float(currents_a)}
+        {"current": _report_current(currents_a)}
         if not isinstance(currents_a, Mapping)
-        else {str(name): float(value) for name, value in currents_a.items()}
+        else {str(name): _report_current(value) for name, value in currents_a.items()}
     )
     conductor_names = list((mesh.conductor_regions or {}).keys())
     geometry = mesh.geometry

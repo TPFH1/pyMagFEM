@@ -51,13 +51,14 @@ After updating an existing editable installation, rerun
 
 ### Equal-Current Parallel Windings
 
-`Constructor.place_winding(..., turns=2, parallel_paths=4)` places eight
-physical conductor bundles representing two series turns and four ideal
-parallel paths. Excitation currents are terminal currents: each physical
-bundle carries one quarter of the winding current. Flux linkage is weighted
-by the same factor, so inductance matrices refer to the winding terminals.
-The model, JSON loader, solver, and reports preserve this distinction.
-The default `parallel_paths=1` retains series-winding behaviour.
+Use the high-level `model.RadialWindingSpec` and
+`model.build_concentric_model` APIs to describe windings. For example, a
+specification with `turns=2` and `parallel_paths=4` places eight physical
+conductor bundles representing two series turns and four ideal parallel
+paths. Excitation currents are terminal currents: each physical bundle carries
+one quarter of the winding current. Flux linkage is weighted by the same
+factor, so inductance matrices refer to the winding terminals. The default
+`parallel_paths=1` retains series-winding behaviour.
 
 This assumes perfect equal sharing, not an electrical network solution for
 unequal branch currents or circulating currents. Physical bundle placements
@@ -120,10 +121,13 @@ nonlinear-material, and transformer workflows.
 
 ## Model and solver structure
 
-Models are represented by validated, versioned dataclasses in
-[`model/schema.py`](model/schema.py). The model separates geometry, regions,
-materials, conductors, windings, circuits, excitation, mesh, solver, and
-output settings.
+The consumer-facing workflow is the high-level model factory and simulation
+facade described below. Internally, models are represented by validated,
+versioned dataclasses in [`model/schema.py`](model/schema.py); these schema
+objects and low-level constructors are implementation structures, not the
+preferred application interface. The internal model separates geometry,
+regions, materials, conductors, windings, circuits, excitation, mesh, solver,
+and output settings.
 
 The main packages are:
 
@@ -155,6 +159,11 @@ $\mu=\mu_0\mu_r$. Nonlinear material adapters expose both relative and absolute
 permeability consistently.
 
 ## Development
+
+The following sections describe lower-level implementation and extension
+details. Consumer applications should use the high-level model factory and
+simulation APIs above; use schema and constructor objects directly only when
+extending pyMagFEM or when a factory cannot express the required geometry.
 
 ### Winding Insulation Matrix
 
@@ -206,6 +215,9 @@ preserves the previous grading. The same keyword is accepted by
 `simulation.create_mesh()` and `mesh_from_json()`.
 
 ### Higher-Level Model and Analysis APIs
+
+For application code, prefer this factory over manually assembling
+`FEMModel`, `CoreSpec`, or `Constructor` objects:
 
 `model.RadialWindingSpec` describes one single-column winding, including
 electrical turns, parallel paths, and `bottom`, `center`, or `top` alignment.

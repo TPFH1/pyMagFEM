@@ -10,8 +10,12 @@ from .frequency_solver import (
 )
 from .litz import LitzLoss, LitzProperties, litz_loss, meeker_litz_properties
 from .materials import (
+                          COPPER_CONDUCTIVITY_AT_20C_S_PER_M,
+                          COPPER_REFERENCE_TEMPERATURE_C,
+                          COPPER_TEMPERATURE_COEFFICIENT_PER_C,
                           MU0,
                           absolute_to_relative_permeability,
+                          copper_conductivity_at_temperature_s_per_m,
                           relative_to_absolute_permeability,
 )
 from .nonlinear import NonlinearCoreMaterial, material_from_materialdatabase
@@ -62,6 +66,9 @@ from .solver import (
 from .voltage_solver import solve_voltage_excitation
 
 __all__ = [
+                          "COPPER_CONDUCTIVITY_AT_20C_S_PER_M",
+                          "COPPER_REFERENCE_TEMPERATURE_C",
+                          "COPPER_TEMPERATURE_COEFFICIENT_PER_C",
                           "MU0",
                           "AxisymmetricMesh",
                           "FrequencyDomainResult",
@@ -86,6 +93,7 @@ __all__ = [
                           "conductor_area",
                           "conductor_current",
                           "copper_loss",
+                          "copper_conductivity_at_temperature_s_per_m",
                           "core_loss",
                           "core_loss_density",
                           "core_losses",

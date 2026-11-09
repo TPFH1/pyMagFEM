@@ -135,6 +135,20 @@ The main packages are:
 - [`fem/postprocess.py`](fem/postprocess.py): field, energy, flux-linkage, and loss quantities;
 - [`fem/plot.py`](fem/plot.py): mesh and field visualization.
 
+## Materials
+
+`pymagfem.fem` exports reference copper properties: `COPPER_CONDUCTIVITY_AT_20C_S_PER_M`,
+`COPPER_REFERENCE_TEMPERATURE_C`, and `COPPER_TEMPERATURE_COEFFICIENT_PER_C`.
+`fem.copper_conductivity_at_temperature_s_per_m(temperature_c)` applies those
+defaults using a linear temperature coefficient. Override the keyword-only
+reference parameters when measured material data is available. Solvers do not
+automatically apply the copper temperature correction; callers select and
+assign the resulting conductivity to their material model.
+
+```python
+copper_conductivity_s_per_m = fem.copper_conductivity_at_temperature_s_per_m(140.0)
+```
+
 Material APIs use relative permeability. Internal calculations convert it to
 absolute permeability in H/m using
 $\mu=\mu_0\mu_r$. Nonlinear material adapters expose both relative and absolute

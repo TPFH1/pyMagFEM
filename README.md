@@ -102,8 +102,7 @@ physical conductor bundles in that chamber), `parallel_paths`, and `layers`.
 Section conductor counts for one winding must sum to its electrical turns times
 its path count, and path counts must agree across sections. The compiler
 distributes path membership across sections so every path has the declared
-series-turn count. Existing integer `turns` arguments to `WindingSection` remain
-supported and are converted to `turns * parallel_paths` conductors.
+series-turn count.
 
 Paths share current equally at the terminals. Two series turns with four paths
 create eight physical bundles, each carrying one quarter of the terminal
@@ -289,8 +288,7 @@ top-to-bottom. Each section selects its winding, integer `conductor_count`,
 parallel paths, radial `layers`, `h_loc`, and `v_loc`. The conductor counts
 across a winding's sections must total its electrical turns multiplied by the
 parallel-path count. The compiler allocates conductors across paths in section
-order so each path retains the declared series-turn count. Legacy whole-turn
-`WindingSection(turns=...)` construction remains supported. The wrappers create
+order so each path retains the declared series-turn count. The wrappers create
 placement-only chambers, derive the physical window from the required winding
 envelope and clearances, then compile to the regular FEM model. Direct
 `split_chamber` and `build_chambered_model` remain available for arrangements

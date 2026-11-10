@@ -132,40 +132,19 @@ def _location(value: Align | Distribute | str, axis: str) -> Align | Distribute:
     return location
 
 
-def _validate_turn_definition(
-    turns: int | None,
-    conductor_count: int | None,
-    parallel_paths: int,
-    label: str,
-) -> None:
-    if (turns is None) == (conductor_count is None):
-        raise ValueError(f"{label} must specify exactly one of turns or conductor_count")
-    if turns is not None and (
-        isinstance(turns, bool) or not isinstance(turns, int) or turns < 1
-    ):
-        raise ValueError(f"{label} turns must be a positive integer")
-    if conductor_count is not None and (
-        isinstance(conductor_count, bool)
-        or not isinstance(conductor_count, int)
-        or conductor_count < 1
-    ):
-        raise ValueError(f"{label} conductor_count must be a positive integer")
-
-
 @dataclass(frozen=True)
 class ChamberWindingAssignment:
     """Place physical conductors for one winding in a leaf chamber."""
 
     chamber: Chamber
     winding: str
-    turns: int | None = None
+    conductor_count: int
     parallel_paths: int = 1
     layers: int | None = None
     h_loc: Align | Distribute | str = Align.Center
     v_loc: Align | Distribute | str = Align.Center
     start: WindingStart | str = WindingStart.Bottom
     serpentine: bool = True
-    conductor_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.winding:
@@ -173,12 +152,9 @@ class ChamberWindingAssignment:
         if (isinstance(self.parallel_paths, bool) or not isinstance(self.parallel_paths, int)
                 or self.parallel_paths < 1):
             raise ValueError("assignment parallel_paths must be a positive integer")
-        _validate_turn_definition(
-            self.turns,
-            self.conductor_count,
-            self.parallel_paths,
-            "assignment",
-        )
+        if (isinstance(self.conductor_count, bool) or not isinstance(self.conductor_count, int)
+                or self.conductor_count < 1):
+            raise ValueError("assignment conductor_count must be a positive integer")
         if self.layers is not None and (
             isinstance(self.layers, bool) or not isinstance(self.layers, int) or self.layers < 1
         ):
@@ -196,7 +172,6 @@ class ChamberWindingAssignment:
         return {
             "chamber": self.chamber.name,
             "winding": self.winding,
-            "turns": self.turns,
             "conductor_count": self.conductor_count,
             "parallel_paths": self.parallel_paths,
             "layers": self.layers,
@@ -208,30 +183,21 @@ class ChamberWindingAssignment:
 
     @property
     def physical_conductor_count(self) -> int:
-        if self.conductor_count is not None:
-            return self.conductor_count
-        assert self.turns is not None
-        return self.turns * self.parallel_paths
+        return self.conductor_count
 
 
 @dataclass(frozen=True)
 class WindingSection:
-    """One winding section with an integer physical conductor count.
-
-    ``turns`` remains available for legacy whole-turn sections. New definitions
-    should use ``conductor_count`` to specify the physical conductors placed in
-    the section.
-    """
+    """One winding section with an integer physical conductor count."""
 
     winding: str
-    turns: int | None = None
+    conductor_count: int
     parallel_paths: int = 1
     layers: int = 1
     h_loc: Align | Distribute | str = Align.Center
     v_loc: Align | Distribute | str = Align.Center
     start: WindingStart | str = WindingStart.Bottom
     serpentine: bool = True
-    conductor_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.winding:
@@ -242,12 +208,9 @@ class WindingSection:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"section {name} must be a positive integer")
-        _validate_turn_definition(
-            self.turns,
-            self.conductor_count,
-            self.parallel_paths,
-            "section",
-        )
+        if (isinstance(self.conductor_count, bool) or not isinstance(self.conductor_count, int)
+                or self.conductor_count < 1):
+            raise ValueError("section conductor_count must be a positive integer")
         object.__setattr__(self, "h_loc", _location(self.h_loc, "horizontal"))
         object.__setattr__(self, "v_loc", _location(self.v_loc, "vertical"))
         try:
@@ -261,7 +224,6 @@ class WindingSection:
         return ChamberWindingAssignment(
             chamber=chamber,
             winding=self.winding,
-            turns=self.turns,
             conductor_count=self.conductor_count,
             parallel_paths=self.parallel_paths,
             layers=self.layers,
@@ -273,10 +235,7 @@ class WindingSection:
 
     @property
     def physical_conductor_count(self) -> int:
-        if self.conductor_count is not None:
-            return self.conductor_count
-        assert self.turns is not None
-        return self.turns * self.parallel_paths
+        return self.conductor_count
 
 
 @dataclass(frozen=True)

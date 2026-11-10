@@ -357,7 +357,7 @@ def test_conductor_interior_mesh_growth_is_limited_without_refining_core():
             "primary", RoundConductor("copper", radius=conductor_radius), 1,
         ),),
         root_chamber=chamber,
-        assignments=(ChamberWindingAssignment(chamber, "primary", 1),),
+        assignments=(ChamberWindingAssignment(chamber, "primary", conductor_count=1),),
         insulation=insulation,
     )
     mesh = build_mesh(component, max_size=0.003, conductor_geometry_size=boundary_size,
@@ -664,7 +664,7 @@ def test_parallel_litz_report_uses_litz_losses():
         windings=(WindingDefinition("secondary", conductor, 1),),
         root_chamber=chamber,
         assignments=(ChamberWindingAssignment(
-            chamber, "secondary", 1, parallel_paths=4,
+            chamber, "secondary", conductor_count=4, parallel_paths=4,
         ),),
         insulation=insulation,
     )
@@ -876,7 +876,7 @@ def test_parallel_litz_simulation_splits_terminal_current():
         windings=(WindingDefinition("secondary", conductor, 1),),
         root_chamber=chamber,
         assignments=(ChamberWindingAssignment(
-            chamber, "secondary", 1, parallel_paths=4,
+            chamber, "secondary", conductor_count=4, parallel_paths=4,
         ),),
         insulation=insulation,
     )

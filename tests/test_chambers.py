@@ -126,7 +126,7 @@ def test_initial_chamber_applies_core_to_winding_insulation_without_changing_win
         core=core,
         windings=(WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1),),
         root_chamber=chamber,
-        assignments=(ChamberWindingAssignment(chamber, "primary", 1),),
+        assignments=(ChamberWindingAssignment(chamber, "primary", conductor_count=1),),
         insulation=insulation,
     )
 
@@ -148,7 +148,7 @@ def test_multiple_air_gaps_preserve_their_vertical_positions_and_lengths():
         core=core,
         windings=(WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1),),
         root_chamber=chamber,
-        assignments=(ChamberWindingAssignment(chamber, "primary", 1),),
+        assignments=(ChamberWindingAssignment(chamber, "primary", conductor_count=1),),
         insulation=insulation,
         air_gaps=air_gaps,
     )
@@ -202,7 +202,7 @@ def small_winding_layout():
     insulation = InsulationSpec(c2w_left=0.001, c2w_right=0.001)
     chamber = initial_chamber(core, insulation)
     winding = WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1)
-    assignment = ChamberWindingAssignment(chamber, "primary", 1)
+    assignment = ChamberWindingAssignment(chamber, "primary", conductor_count=1)
     return WindingSchemeLayout(
         scheme="test",
         core=core,
@@ -247,7 +247,7 @@ def test_air_gaps_must_fit_the_center_leg_and_not_overlap():
     insulation = InsulationSpec(c2w_left=0.001, c2w_right=0.001)
     chamber = initial_chamber(core, insulation)
     winding = WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1)
-    assignment = (ChamberWindingAssignment(chamber, "primary", 1),)
+    assignment = (ChamberWindingAssignment(chamber, "primary", conductor_count=1),)
 
     with pytest.raises(ValueError, match="must fit inside the winding window"):
         build_chambered_model(
@@ -285,8 +285,8 @@ def test_turns_can_span_chambers_and_parallel_path_metadata_is_preserved():
         windings=(WindingDefinition("primary", RoundConductor("wire", radius=0.001), 3),),
         root_chamber=root,
         assignments=(
-            ChamberWindingAssignment(left, "primary", 1, parallel_paths=2),
-            ChamberWindingAssignment(right, "primary", 2, parallel_paths=2),
+            ChamberWindingAssignment(left, "primary", conductor_count=2, parallel_paths=2),
+            ChamberWindingAssignment(right, "primary", conductor_count=4, parallel_paths=2),
         ),
         insulation=insulation,
     )
@@ -303,7 +303,7 @@ def test_turns_can_span_chambers_and_parallel_path_metadata_is_preserved():
     ]
     assert model.legacy_geometry()["conductor_current_fractions"] == [0.5] * 6
     restored = normalize(asdict(model))
-    assert restored.geometry.extra["chamber_layout"]["assignments"][0]["turns"] == 1
+    assert restored.geometry.extra["chamber_layout"]["assignments"][0]["conductor_count"] == 2
 
 
 def test_integer_conductor_counts_split_parallel_paths_across_axial_sections():
@@ -362,9 +362,9 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
         w2w_matrix=[[0.0005, 0.0005], [0.0005, 0.0005]],
     )
     layout = RadialStack(
-        sections=(
-            WindingSection("primary", turns=2, layers=1),
-            WindingSection("secondary", turns=1, parallel_paths=2, layers=1),
+            sections=(
+                WindingSection("primary", conductor_count=2, layers=1),
+                WindingSection("secondary", conductor_count=2, parallel_paths=2, layers=1),
         ),
         split_ins=0.001,
     ).layout(core_area=100e-6, windings=windings, insulation=insulation)
@@ -384,9 +384,11 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
         plt.close(ax.figure)
 
 
-def test_fractional_legacy_section_turns_are_rejected_in_favor_of_conductor_counts():
-    with pytest.raises(ValueError, match="section turns must be a positive integer"):
-        WindingSection("secondary", turns=1.5, parallel_paths=2)
+def test_winding_section_requires_explicit_conductor_count():
+    with pytest.raises(TypeError, match="unexpected keyword argument 'turns'"):
+        WindingSection("secondary", turns=1, parallel_paths=2)
+    with pytest.raises(ValueError, match="conductor_count must be a positive integer"):
+        WindingSection("secondary", conductor_count=1.5, parallel_paths=2)
 
 
 def test_chamber_assignment_rejects_wrong_turn_total_and_mismatched_paths():
@@ -404,8 +406,8 @@ def test_chamber_assignment_rejects_wrong_turn_total_and_mismatched_paths():
             windings=(winding,),
             root_chamber=root,
             assignments=(
-                ChamberWindingAssignment(left, "primary", 1),
-                ChamberWindingAssignment(right, "primary", 1),
+                ChamberWindingAssignment(left, "primary", conductor_count=1),
+                ChamberWindingAssignment(right, "primary", conductor_count=1),
             ),
             insulation=insulation,
         )
@@ -415,8 +417,8 @@ def test_chamber_assignment_rejects_wrong_turn_total_and_mismatched_paths():
             windings=(winding,),
             root_chamber=root,
             assignments=(
-                ChamberWindingAssignment(left, "primary", 1, parallel_paths=1),
-                ChamberWindingAssignment(right, "primary", 2, parallel_paths=2),
+                ChamberWindingAssignment(left, "primary", conductor_count=1, parallel_paths=1),
+                ChamberWindingAssignment(right, "primary", conductor_count=4, parallel_paths=2),
             ),
             insulation=insulation,
         )
@@ -432,7 +434,7 @@ def test_every_leaf_chamber_requires_an_assignment():
             core=core,
             windings=(WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1),),
             root_chamber=root,
-            assignments=(ChamberWindingAssignment(left, "primary", 1),),
+            assignments=(ChamberWindingAssignment(left, "primary", conductor_count=1),),
             insulation=insulation,
         )
 
@@ -450,7 +452,7 @@ def test_serpentine_progression_and_location_modes_generate_bundle_centers():
         assignments=(ChamberWindingAssignment(
             chamber,
             "primary",
-            7,
+            conductor_count=7,
             h_loc=Align.Left,
             v_loc=Align.Bot,
             start=WindingStart.Bottom,
@@ -472,7 +474,7 @@ def test_serpentine_progression_and_location_modes_generate_bundle_centers():
         assignments=(ChamberWindingAssignment(
             chamber,
             "secondary",
-            7,
+            conductor_count=7,
             h_loc=Distribute.Horizontally,
             v_loc=Distribute.Vertically,
         ),),
@@ -534,13 +536,13 @@ def test_d_series_notebook_chamber_layouts_fit(
             ChamberWindingAssignment(
                 primary_chamber,
                 "primary",
-                8,
+                conductor_count=8,
                 h_loc=Align.Center if layout == "vertical" else Align.Left,
             ),
             ChamberWindingAssignment(
                 secondary_chamber,
                 "secondary",
-                2,
+                conductor_count=2 * secondary_paths,
                 parallel_paths=secondary_paths,
                 h_loc=Align.Center if layout == "vertical" else Align.Right,
             ),
@@ -571,8 +573,11 @@ def test_radial_stack_derives_d2_window_and_orders_primary_inside_secondary():
     )
     layout = RadialStack(
         sections=(
-            WindingSection("primary", 8, layers=1, h_loc=Align.Left),
-            WindingSection("secondary", 2, parallel_paths=2, layers=1, h_loc=Align.Right),
+            WindingSection("primary", conductor_count=8, layers=1, h_loc=Align.Left),
+            WindingSection(
+                "secondary", conductor_count=4, parallel_paths=2, layers=1,
+                h_loc=Align.Right,
+            ),
         ),
         split_ins=0.001,
     ).layout(
@@ -611,8 +616,11 @@ def test_axial_stack_derives_d3_window_with_primary_above_secondary():
     )
     layout = AxialStack(
         sections=(
-            WindingSection("primary", 8, layers=2, h_loc=Align.Center),
-            WindingSection("secondary", 2, parallel_paths=3, layers=2, h_loc=Align.Center),
+            WindingSection("primary", conductor_count=8, layers=2, h_loc=Align.Center),
+            WindingSection(
+                "secondary", conductor_count=6, parallel_paths=3, layers=2,
+                h_loc=Align.Center,
+            ),
         ),
         split_ins=0.0005,
     ).layout(

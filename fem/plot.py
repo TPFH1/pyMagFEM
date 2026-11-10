@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 from matplotlib.colors import LogNorm
 
+from model.schema import FEMModel
+
 from .litz import LitzProperties
 from .physics import (
     complex_conductivity,
@@ -75,6 +77,140 @@ def plot_mesh(
     ax.set_xlabel(f"r [{unit}]")
     ax.set_ylabel(f"z [{unit}]")
     ax.set_title("FEM mesh")
+    return ax
+
+
+def plot_winding_scheme(
+    component: FEMModel,
+    *,
+    ax=None,
+    length_unit: str = "mm",
+    winding_labels: Mapping[str, str] | None = None,
+    label_fontsize: float = 8.0,
+):
+    """Plot component outlines and label each physical conductor by winding turn."""
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle, Polygon, Rectangle
+    except ImportError as exc:
+        raise RuntimeError("plot_winding_scheme requires matplotlib") from exc
+    if component.geometry.core is None or component.geometry.winding_window is None:
+        raise ValueError("component geometry requires core and winding_window")
+    if label_fontsize <= 0.0:
+        raise ValueError("label_fontsize must be positive")
+    if ax is None:
+        _, ax = plt.subplots()
+    scale, unit = _length_scale(length_unit)
+
+    def add_region_outline(region, *, edgecolor, linestyle="-"):
+        corners = np.asarray(region.corners, dtype=float)
+        if corners.ndim != 2 or corners.shape[0] < 3 or corners.shape[1] < 2:
+            raise ValueError(f"region {region.name!r} requires at least three corners")
+        minimum = corners[:, :2].min(axis=0)
+        maximum = corners[:, :2].max(axis=0)
+        vertices = np.asarray([
+            [minimum[0], minimum[1]],
+            [maximum[0], minimum[1]],
+            [maximum[0], maximum[1]],
+            [minimum[0], maximum[1]],
+        ])
+        ax.add_patch(Polygon(
+            scale * vertices,
+            closed=True,
+            fill=False,
+            edgecolor=edgecolor,
+            linestyle=linestyle,
+            linewidth=1.0,
+        ))
+
+    add_region_outline(component.geometry.core, edgecolor="#333333")
+    add_region_outline(component.geometry.winding_window, edgecolor="#777777")
+    for gap in component.geometry.air_gaps:
+        if gap.center is not None and gap.size is not None:
+            center = np.asarray(gap.center, dtype=float)
+            size = np.asarray(gap.size, dtype=float)
+            ax.add_patch(Rectangle(
+                scale * (center - size / 2.0),
+                scale * size[0],
+                scale * size[1],
+                fill=False,
+                edgecolor="#bf4b4b",
+                linestyle="--",
+                linewidth=0.9,
+            ))
+        elif gap.corners:
+            add_region_outline(gap, edgecolor="#bf4b4b", linestyle="--")
+
+    conductors = {conductor.name: conductor for conductor in component.conductors}
+    colors = plt.get_cmap("tab10")
+    labels = winding_labels or {}
+    for winding_index, winding in enumerate(component.windings):
+        prefix = labels.get(winding.name, winding.name[:1].lower())
+        if not isinstance(prefix, str) or not prefix:
+            raise ValueError(f"winding label for {winding.name!r} must be a non-empty string")
+        color = colors(winding_index % 10)
+        fallback_turns_by_path = [0] * winding.parallel_paths
+        for placement_index, turn in enumerate(winding.turns):
+            conductor = conductors.get(turn.conductor or winding.conductor)
+            if conductor is None:
+                raise ValueError(f"missing conductor definition for winding {winding.name!r}")
+            center = np.asarray(turn.center, dtype=float)
+            center_plot = scale * center
+            if conductor.shape == "round":
+                if conductor.radius is None or conductor.radius <= 0.0:
+                    raise ValueError(f"round conductor {conductor.name!r} requires a positive radius")
+                patch = Circle(center_plot, scale * conductor.radius)
+            elif conductor.shape == "rectangular":
+                if (conductor.width is None or conductor.height is None
+                        or conductor.width <= 0.0 or conductor.height <= 0.0):
+                    raise ValueError(
+                        f"rectangular conductor {conductor.name!r} requires positive width and height"
+                    )
+                patch = Rectangle(
+                    center_plot - scale * np.asarray([conductor.width, conductor.height]) / 2.0,
+                    scale * conductor.width,
+                    scale * conductor.height,
+                )
+            else:
+                raise ValueError(f"unsupported conductor shape: {conductor.shape!r}")
+            patch.set_facecolor((color[0], color[1], color[2], 0.12))
+            patch.set_edgecolor(color)
+            patch.set_linewidth(0.9)
+            ax.add_patch(patch)
+
+            path = turn.parallel_path
+            if path is None:
+                path = placement_index % winding.parallel_paths
+            if path < 0 or path >= winding.parallel_paths:
+                raise ValueError(f"invalid parallel path {path} for winding {winding.name!r}")
+            turn_index = turn.metadata.get("turn_index")
+            if (isinstance(turn_index, bool) or not isinstance(turn_index, int)
+                    or turn_index < 0):
+                fallback_turns_by_path[path] += 1
+                turn_number = fallback_turns_by_path[path]
+            else:
+                turn_number = turn_index + 1
+                fallback_turns_by_path[path] = max(
+                    fallback_turns_by_path[path], turn_number
+                )
+            ax.text(
+                center_plot[0],
+                center_plot[1],
+                f"{prefix}{turn_number}",
+                ha="center",
+                va="center",
+                fontsize=label_fontsize,
+                color="#202020",
+                clip_on=True,
+            )
+
+    ax.relim()
+    ax.autoscale_view()
+    ax.set_xlim(left=0.0)
+    ax.set_aspect("equal")
+    ax.set_xlabel(f"r [{unit}]")
+    ax.set_ylabel(f"z [{unit}]")
+    ax.set_title("Winding scheme")
     return ax
 
 

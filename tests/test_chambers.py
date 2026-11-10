@@ -1,7 +1,9 @@
 from dataclasses import asdict
 
+import matplotlib.pyplot as plt
 import pytest
 
+from fem import plot_winding_scheme
 from model import (
     AirGapSpec,
     Align,
@@ -302,6 +304,89 @@ def test_turns_can_span_chambers_and_parallel_path_metadata_is_preserved():
     assert model.legacy_geometry()["conductor_current_fractions"] == [0.5] * 6
     restored = normalize(asdict(model))
     assert restored.geometry.extra["chamber_layout"]["assignments"][0]["turns"] == 1
+
+
+def test_integer_conductor_counts_split_parallel_paths_across_axial_sections():
+    primary_conductor = RoundConductor("primary_wire", radius=0.00135)
+    secondary_conductor = RoundConductor("secondary_wire", radius=0.00135)
+    windings = (
+        WindingDefinition("primary", primary_conductor, turns=12, turn_insulation=0.0005),
+        WindingDefinition("secondary", secondary_conductor, turns=3, turn_insulation=0.0005),
+    )
+    insulation = InsulationSpec(
+        c2w_left=0.001,
+        c2w_right=0.001,
+        c2w_top=0.001,
+        c2w_bottom=0.001,
+        w2w_matrix=[[0.0005, 0.0005], [0.0005, 0.0005]],
+    )
+    sections = (
+        WindingSection(
+            "secondary", parallel_paths=2, layers=3, conductor_count=3,
+        ),
+        WindingSection(
+            "primary", parallel_paths=1, layers=3, conductor_count=12,
+        ),
+        WindingSection(
+            "secondary", parallel_paths=2, layers=3, conductor_count=3,
+        ),
+    )
+    layout = AxialStack(sections=sections, split_ins=0.0005).layout(
+        core_area=200e-6,
+        windings=windings,
+        insulation=insulation,
+    )
+
+    component = layout.build_model()
+    secondary = component.windings[1]
+
+    assert len(secondary.turns) == 6
+    assert [turn.parallel_path for turn in secondary.turns] == [0, 1, 0, 1, 0, 1]
+    assert [turn.metadata["turn_index"] for turn in secondary.turns] == [0, 0, 1, 1, 2, 2]
+    assert [turn.current_fraction for turn in secondary.turns] == [0.5] * 6
+    assert [circuit.turns for circuit in component.circuits] == [12, 3]
+
+
+def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
+    primary = RoundConductor("primary_wire", radius=0.001)
+    secondary = RoundConductor("secondary_wire", radius=0.001)
+    windings = (
+        WindingDefinition("primary", primary, turns=2),
+        WindingDefinition("secondary", secondary, turns=1, turn_insulation=0.0005),
+    )
+    insulation = InsulationSpec(
+        c2w_left=0.001,
+        c2w_right=0.001,
+        c2w_top=0.001,
+        c2w_bottom=0.001,
+        w2w_matrix=[[0.0005, 0.0005], [0.0005, 0.0005]],
+    )
+    layout = RadialStack(
+        sections=(
+            WindingSection("primary", turns=2, layers=1),
+            WindingSection("secondary", turns=1, parallel_paths=2, layers=1),
+        ),
+        split_ins=0.001,
+    ).layout(core_area=100e-6, windings=windings, insulation=insulation)
+    component = layout.build_model()
+
+    ax = plot_winding_scheme(component)
+    try:
+        assert [text.get_text() for text in ax.texts] == ["p1", "p2", "s1", "s1"]
+        assert len(ax.patches) == 6
+        assert ax.get_xlabel() == "r [mm]"
+        assert ax.get_ylabel() == "z [mm]"
+        core_corners = component.geometry.core.corners
+        assert ax.get_xlim()[1] >= max(point[0] for point in core_corners) * 1e3
+        assert ax.get_ylim()[0] <= min(point[1] for point in core_corners) * 1e3
+        assert ax.get_ylim()[1] >= max(point[1] for point in core_corners) * 1e3
+    finally:
+        plt.close(ax.figure)
+
+
+def test_fractional_legacy_section_turns_are_rejected_in_favor_of_conductor_counts():
+    with pytest.raises(ValueError, match="section turns must be a positive integer"):
+        WindingSection("secondary", turns=1.5, parallel_paths=2)
 
 
 def test_chamber_assignment_rejects_wrong_turn_total_and_mismatched_paths():

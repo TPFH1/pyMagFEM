@@ -132,26 +132,53 @@ def _location(value: Align | Distribute | str, axis: str) -> Align | Distribute:
     return location
 
 
+def _validate_turn_definition(
+    turns: int | None,
+    conductor_count: int | None,
+    parallel_paths: int,
+    label: str,
+) -> None:
+    if (turns is None) == (conductor_count is None):
+        raise ValueError(f"{label} must specify exactly one of turns or conductor_count")
+    if turns is not None and (
+        isinstance(turns, bool) or not isinstance(turns, int) or turns < 1
+    ):
+        raise ValueError(f"{label} turns must be a positive integer")
+    if conductor_count is not None and (
+        isinstance(conductor_count, bool)
+        or not isinstance(conductor_count, int)
+        or conductor_count < 1
+    ):
+        raise ValueError(f"{label} conductor_count must be a positive integer")
+
+
 @dataclass(frozen=True)
 class ChamberWindingAssignment:
-    """Place an electrical turn segment in one leaf chamber."""
+    """Place physical conductors for one winding in a leaf chamber."""
 
     chamber: Chamber
     winding: str
-    turns: int
+    turns: int | None = None
     parallel_paths: int = 1
     layers: int | None = None
     h_loc: Align | Distribute | str = Align.Center
     v_loc: Align | Distribute | str = Align.Center
     start: WindingStart | str = WindingStart.Bottom
     serpentine: bool = True
+    conductor_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.winding:
             raise ValueError("assignment winding must be non-empty")
-        for value, name in ((self.turns, "turns"), (self.parallel_paths, "parallel_paths")):
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-                raise ValueError(f"assignment {name} must be a positive integer")
+        if (isinstance(self.parallel_paths, bool) or not isinstance(self.parallel_paths, int)
+                or self.parallel_paths < 1):
+            raise ValueError("assignment parallel_paths must be a positive integer")
+        _validate_turn_definition(
+            self.turns,
+            self.conductor_count,
+            self.parallel_paths,
+            "assignment",
+        )
         if self.layers is not None and (
             isinstance(self.layers, bool) or not isinstance(self.layers, int) or self.layers < 1
         ):
@@ -170,6 +197,7 @@ class ChamberWindingAssignment:
             "chamber": self.chamber.name,
             "winding": self.winding,
             "turns": self.turns,
+            "conductor_count": self.conductor_count,
             "parallel_paths": self.parallel_paths,
             "layers": self.layers,
             "h_loc": self.h_loc.value,
@@ -178,30 +206,48 @@ class ChamberWindingAssignment:
             "serpentine": self.serpentine,
         }
 
+    @property
+    def physical_conductor_count(self) -> int:
+        if self.conductor_count is not None:
+            return self.conductor_count
+        assert self.turns is not None
+        return self.turns * self.parallel_paths
+
 
 @dataclass(frozen=True)
 class WindingSection:
-    """One chamber segment of a winding, with a radial winding-layer count."""
+    """One winding section with an integer physical conductor count.
+
+    ``turns`` remains available for legacy whole-turn sections. New definitions
+    should use ``conductor_count`` to specify the physical conductors placed in
+    the section.
+    """
 
     winding: str
-    turns: int
+    turns: int | None = None
     parallel_paths: int = 1
     layers: int = 1
     h_loc: Align | Distribute | str = Align.Center
     v_loc: Align | Distribute | str = Align.Center
     start: WindingStart | str = WindingStart.Bottom
     serpentine: bool = True
+    conductor_count: int | None = None
 
     def __post_init__(self) -> None:
         if not self.winding:
             raise ValueError("section winding must be non-empty")
         for value, name in (
-            (self.turns, "turns"),
             (self.parallel_paths, "parallel_paths"),
             (self.layers, "layers"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"section {name} must be a positive integer")
+        _validate_turn_definition(
+            self.turns,
+            self.conductor_count,
+            self.parallel_paths,
+            "section",
+        )
         object.__setattr__(self, "h_loc", _location(self.h_loc, "horizontal"))
         object.__setattr__(self, "v_loc", _location(self.v_loc, "vertical"))
         try:
@@ -216,6 +262,7 @@ class WindingSection:
             chamber=chamber,
             winding=self.winding,
             turns=self.turns,
+            conductor_count=self.conductor_count,
             parallel_paths=self.parallel_paths,
             layers=self.layers,
             h_loc=self.h_loc,
@@ -223,6 +270,13 @@ class WindingSection:
             start=self.start,
             serpentine=self.serpentine,
         )
+
+    @property
+    def physical_conductor_count(self) -> int:
+        if self.conductor_count is not None:
+            return self.conductor_count
+        assert self.turns is not None
+        return self.turns * self.parallel_paths
 
 
 @dataclass(frozen=True)
@@ -351,7 +405,7 @@ def _section_envelope(
     winding: WindingDefinition,
     turn_insulation: float,
 ) -> tuple[float, float]:
-    physical_count = section.turns * section.parallel_paths
+    physical_count = section.physical_conductor_count
     if section.layers > physical_count:
         raise ValueError("section layers cannot exceed physical conductor count")
     bundle_width = 2.0 * winding.conductor.radial_half_width
@@ -400,14 +454,14 @@ def _layout_winding_scheme(
         )
         for index, winding in enumerate(windings)
     }
-    turns_by_winding = {name: 0 for name in winding_by_name}
+    conductor_counts_by_winding = {name: 0 for name in winding_by_name}
     paths_by_winding: dict[str, int] = {}
     section_sizes = []
     for section in sections:
         winding = winding_by_name.get(section.winding)
         if winding is None:
             raise ValueError(f"unknown winding in section: {section.winding!r}")
-        turns_by_winding[section.winding] += section.turns
+        conductor_counts_by_winding[section.winding] += section.physical_conductor_count
         paths = paths_by_winding.setdefault(section.winding, section.parallel_paths)
         if paths != section.parallel_paths:
             raise ValueError(
@@ -417,10 +471,13 @@ def _layout_winding_scheme(
             _section_envelope(section, winding, turn_insulation[section.winding])
         )
     for winding in windings:
-        if turns_by_winding[winding.name] != winding.turns:
+        paths = paths_by_winding.get(winding.name)
+        expected_conductor_count = winding.turns * paths if paths is not None else -1
+        actual_conductor_count = conductor_counts_by_winding[winding.name]
+        if actual_conductor_count != expected_conductor_count:
             raise ValueError(
-                f"winding {winding.name!r} has {turns_by_winding[winding.name]} section turns; "
-                f"expected {winding.turns}"
+                f"winding {winding.name!r} has {actual_conductor_count} section conductors; "
+                f"expected {expected_conductor_count} from turns and parallel_paths"
             )
 
     if scheme == "radial_inside_to_outside":
@@ -704,7 +761,7 @@ def _assignment_centers(
     bundle_width = 2.0 * conductor.radial_half_width
     bundle_height = conductor.height
     insulation = turn_insulation
-    physical_count = assignment.turns * assignment.parallel_paths
+    physical_count = assignment.physical_conductor_count
     if assignment.layers is None:
         per_layer = floor((chamber.height + insulation + 1e-12) / (bundle_height + insulation))
         if per_layer < 1:
@@ -818,7 +875,7 @@ def build_chambered_model(
     leaves = _leaf_chambers(root_chamber)
 
     assignments_by_chamber: dict[str, ChamberWindingAssignment] = {}
-    turns_by_winding = {name: 0 for name in winding_by_name}
+    conductor_counts_by_winding = {name: 0 for name in winding_by_name}
     paths_by_winding: dict[str, int] = {}
     for assignment in assignments:
         leaf = leaves.get(assignment.chamber.name)
@@ -831,7 +888,9 @@ def build_chambered_model(
         if assignment.winding not in winding_by_name:
             raise ValueError(f"assignment references unknown winding {assignment.winding!r}")
         assignments_by_chamber[assignment.chamber.name] = assignment
-        turns_by_winding[assignment.winding] += assignment.turns
+        conductor_counts_by_winding[assignment.winding] += (
+            assignment.physical_conductor_count
+        )
         paths = paths_by_winding.setdefault(assignment.winding, assignment.parallel_paths)
         if paths != assignment.parallel_paths:
             raise ValueError(
@@ -843,15 +902,16 @@ def build_chambered_model(
         raise ValueError(f"leaf chambers need winding assignments: {sorted(unassigned_chambers)}")
 
     for winding in windings:
-        assigned = turns_by_winding[winding.name]
-        if assigned != winding.turns:
+        paths = paths_by_winding.get(winding.name)
+        expected = winding.turns * paths if paths is not None else -1
+        assigned = conductor_counts_by_winding[winding.name]
+        if assigned != expected:
             raise ValueError(
-                f"winding {winding.name!r} has {assigned} assigned turns; expected {winding.turns}"
+                f"winding {winding.name!r} has {assigned} assigned conductors; expected {expected}"
             )
 
     conductor_by_name: dict[str, ConductorSpec] = {}
     model_windings = []
-    assignment_offsets = {name: 0 for name in winding_by_name}
     turn_insulation_by_winding = {
         winding.name: (
             winding.turn_insulation
@@ -863,6 +923,8 @@ def build_chambered_model(
     for winding in windings:
         paths = paths_by_winding[winding.name]
         turn_placements: list[TurnPlacement] = []
+        next_path = 0
+        turns_by_path = [0] * paths
         for assignment in assignments:
             if assignment.winding != winding.name:
                 continue
@@ -870,10 +932,10 @@ def build_chambered_model(
             centers = _assignment_centers(
                 assignment, winding, turn_insulation_by_winding[winding.name]
             )
-            start_turn = assignment_offsets[winding.name]
             for physical_index, (radius, z) in enumerate(centers):
-                path_index = physical_index % paths
-                turn_index = physical_index // paths
+                path_index = (next_path + physical_index) % paths
+                turn_index = turns_by_path[path_index]
+                turns_by_path[path_index] += 1
                 turn_placements.append(TurnPlacement(
                     center=[round(radius, 15), round(z, 15)],
                     conductor=winding.conductor.name,
@@ -882,16 +944,20 @@ def build_chambered_model(
                     current_fraction=1.0 / paths,
                     metadata={
                         "chamber": chamber.name,
-                        "turn_index": start_turn + turn_index,
+                        "turn_index": turn_index,
                     },
                 ))
-            assignment_offsets[winding.name] += assignment.turns
+            next_path = (next_path + len(centers)) % paths
             existing = conductor_by_name.get(winding.conductor.name)
             if existing is not None and existing != winding.conductor:
                 raise ValueError(
                     f"conductor name {winding.conductor.name!r} has conflicting definitions"
                 )
             conductor_by_name[winding.conductor.name] = winding.conductor
+        if turns_by_path != [winding.turns] * paths:
+            raise ValueError(
+                f"winding {winding.name!r} must have {winding.turns} conductors on each path"
+            )
         model_windings.append(Winding(
             name=winding.name,
             turns=turn_placements,

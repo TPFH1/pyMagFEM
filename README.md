@@ -68,11 +68,11 @@ windings = (primary, secondary)
 layout = model.RadialStack(
 	sections=(
 		model.WindingSection(
-			"primary", turns=8, parallel_paths=1, layers=1,
+			"primary", conductor_count=8, parallel_paths=1, layers=1,
 			h_loc=model.Align.Left, v_loc=model.Align.Center,
 		),
 		model.WindingSection(
-			"secondary", turns=2, parallel_paths=4, layers=1,
+			"secondary", conductor_count=8, parallel_paths=4, layers=1,
 			h_loc=model.Align.Right, v_loc=model.Align.Center,
 		),
 	),
@@ -84,6 +84,7 @@ layout = model.RadialStack(
 )
 print(layout.window_outer_radius_m, layout.window_height_m)
 component = layout.build_model()
+fem.plot_winding_scheme(component)
 ```
 
 For an axial scheme, supply sections in top-to-bottom order to
@@ -96,10 +97,17 @@ and physical window dimensions; core-to-winding clearances are included when
 the physical window is sized.
 
 Electrical turn counts are defined once by `WindingDefinition` and apportioned
-across its sections. Each section specifies its own `parallel_paths` and
-`layers`; path counts must agree across sections of one logical winding. Paths
-share current equally at the terminals. Two series turns with four paths create
-eight physical bundles, each carrying one quarter of the terminal current.
+across its sections. Each section specifies an integer `conductor_count` (the
+physical conductor bundles in that chamber), `parallel_paths`, and `layers`.
+Section conductor counts for one winding must sum to its electrical turns times
+its path count, and path counts must agree across sections. The compiler
+distributes path membership across sections so every path has the declared
+series-turn count. Existing integer `turns` arguments to `WindingSection` remain
+supported and are converted to `turns * parallel_paths` conductors.
+
+Paths share current equally at the terminals. Two series turns with four paths
+create eight physical bundles, each carrying one quarter of the terminal
+current.
 
 This assumes perfect equal sharing, not an electrical network solution for
 unequal branch currents or circulating currents. Physical bundle placements
@@ -277,10 +285,14 @@ preserves the previous grading. The same keyword is accepted by
 
 The scheme wrappers are the application-level geometry constructors.
 `RadialStack` orders sections inner-to-outer; `AxialStack` orders sections
-top-to-bottom. Each section independently selects its winding, electrical
-turns, parallel paths, radial `layers`, `h_loc`, and `v_loc`. The wrappers
-create placement-only chambers, derive the physical window from the required
-winding envelope and clearances, then compile to the regular FEM model. Direct
+top-to-bottom. Each section selects its winding, integer `conductor_count`,
+parallel paths, radial `layers`, `h_loc`, and `v_loc`. The conductor counts
+across a winding's sections must total its electrical turns multiplied by the
+parallel-path count. The compiler allocates conductors across paths in section
+order so each path retains the declared series-turn count. Legacy whole-turn
+`WindingSection(turns=...)` construction remains supported. The wrappers create
+placement-only chambers, derive the physical window from the required winding
+envelope and clearances, then compile to the regular FEM model. Direct
 `split_chamber` and `build_chambered_model` remain available for arrangements
 that do not fit these common scheme patterns.
 

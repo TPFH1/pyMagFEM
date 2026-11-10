@@ -1,7 +1,7 @@
 """Placement-only chambers and rectangular chamber splitting."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import combinations, pairwise
@@ -245,6 +245,33 @@ class WindingSchemeLayout:
     @property
     def window_height_m(self) -> float:
         return 2.0 * self.core.window_half_height
+
+    def air_gaps_from_positions(
+        self,
+        definitions: Sequence[Mapping[str, float]],
+    ) -> tuple[AirGapSpec, ...]:
+        """Build full-center-leg gaps from window-relative position definitions."""
+        air_gaps = []
+        for index, definition in enumerate(definitions):
+            if not isinstance(definition, Mapping):
+                raise TypeError(f"air gap definition {index + 1} must be a mapping")
+            try:
+                axial_length = definition["axial_length_m"]
+                position_percent = definition["position_percent"]
+            except KeyError as error:
+                raise ValueError(
+                    f"air gap definition {index + 1} requires position_percent "
+                    "and axial_length_m"
+                ) from error
+            air_gaps.append(AirGapSpec.from_window_position_percent(
+                f"center_gap_{index + 1}",
+                center_r=self.core.window_inner_radius / 2.0,
+                radial_width=self.core.window_inner_radius,
+                axial_length=axial_length,
+                position_percent=position_percent,
+                window_half_height=self.core.window_half_height,
+            ))
+        return tuple(air_gaps)
 
     def build_model(
         self,

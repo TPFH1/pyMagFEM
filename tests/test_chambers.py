@@ -16,6 +16,7 @@ from model import (
     RoundConductor,
     SplitDirection,
     WindingDefinition,
+    WindingSchemeLayout,
     WindingSection,
     WindingStart,
     build_chambered_model,
@@ -192,6 +193,51 @@ def test_air_gap_percent_position_rejects_a_gap_longer_than_the_window():
         AirGapSpec.from_window_position_percent(
             "gap", 0.005, 0.01, 0.021, 0, window_half_height=0.01,
         )
+
+
+def small_winding_layout():
+    core = small_core()
+    insulation = InsulationSpec(c2w_left=0.001, c2w_right=0.001)
+    chamber = initial_chamber(core, insulation)
+    winding = WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1)
+    assignment = ChamberWindingAssignment(chamber, "primary", 1)
+    return WindingSchemeLayout(
+        scheme="test",
+        core=core,
+        root_chamber=chamber,
+        windings=(winding,),
+        assignments=(assignment,),
+        insulation=insulation,
+        chamber_width_m=chamber.r_max - chamber.r_min,
+        chamber_height_m=chamber.z_max - chamber.z_min,
+    )
+
+
+def test_layout_builds_air_gaps_from_catalog_positions():
+    layout = small_winding_layout()
+
+    air_gaps = layout.air_gaps_from_positions((
+        {"position_percent": 100, "axial_length_m": 0.001},
+        {"position_percent": 0, "axial_length_m": 0.001},
+        {"position_percent": -100, "axial_length_m": 0.001},
+    ))
+
+    assert [gap.name for gap in air_gaps] == [
+        "center_gap_1", "center_gap_2", "center_gap_3",
+    ]
+    assert [gap.center_r for gap in air_gaps] == pytest.approx([0.005] * 3)
+    assert [gap.radial_width for gap in air_gaps] == pytest.approx([0.01] * 3)
+    assert [gap.center_z for gap in air_gaps] == pytest.approx([0.0035, 0.0, -0.0035])
+
+
+def test_layout_air_gap_wrapper_accepts_no_gaps_and_rejects_incomplete_definitions():
+    layout = small_winding_layout()
+
+    assert layout.air_gaps_from_positions(()) == ()
+    with pytest.raises(ValueError, match="requires position_percent and axial_length_m"):
+        layout.air_gaps_from_positions(({"position_percent": 0},))
+    with pytest.raises(TypeError, match="must be a mapping"):
+        layout.air_gaps_from_positions((None,))
 
 
 def test_air_gaps_must_fit_the_center_leg_and_not_overlap():

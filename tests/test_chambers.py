@@ -3,6 +3,7 @@ from dataclasses import asdict
 import pytest
 
 from model import (
+    AirGapSpec,
     Align,
     AxialStack,
     Chamber,
@@ -129,6 +130,99 @@ def test_initial_chamber_applies_core_to_winding_insulation_without_changing_win
     assert chamber.bounds == pytest.approx((0.011, 0.018, -0.0025, 0.0035))
     assert model.geometry.winding_window.corners == core.regions()[1].corners
     assert model.windings[0].turns[0].center == pytest.approx([0.0145, 0.0005])
+
+
+def test_multiple_air_gaps_preserve_their_vertical_positions_and_lengths():
+    core = small_core()
+    insulation = InsulationSpec(c2w_left=0.001, c2w_right=0.001)
+    chamber = initial_chamber(core, insulation)
+    air_gaps = (
+        AirGapSpec("lower_gap", 0.005, -0.003, 0.01, 0.002),
+        AirGapSpec("upper_gap", 0.005, 0.003, 0.01, 0.002),
+    )
+
+    component = build_chambered_model(
+        core=core,
+        windings=(WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1),),
+        root_chamber=chamber,
+        assignments=(ChamberWindingAssignment(chamber, "primary", 1),),
+        insulation=insulation,
+        air_gaps=air_gaps,
+    )
+
+    assert [region.center for region in component.geometry.air_gaps] == [
+        [0.005, -0.003],
+        [0.005, 0.003],
+    ]
+    assert [region.size for region in component.geometry.air_gaps] == [
+        [0.01, 0.002],
+        [0.01, 0.002],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("position_percent", "expected_center_z"),
+    [(100, 0.009), (0, 0.0), (-100, -0.009)],
+)
+def test_air_gap_percent_position_aligns_top_center_or_bottom(
+    position_percent, expected_center_z,
+):
+    gap = AirGapSpec.from_window_position_percent(
+        "gap",
+        center_r=0.005,
+        radial_width=0.01,
+        axial_length=0.002,
+        position_percent=position_percent,
+        window_half_height=0.01,
+    )
+
+    assert gap.center_z == pytest.approx(expected_center_z)
+
+
+@pytest.mark.parametrize("position_percent", [-101, 101, float("nan")])
+def test_air_gap_percent_position_must_be_finite_and_within_range(position_percent):
+    with pytest.raises(ValueError, match="finite|position_percent"):
+        AirGapSpec.from_window_position_percent(
+            "gap", 0.005, 0.01, 0.002, position_percent, window_half_height=0.01,
+        )
+
+
+def test_air_gap_percent_position_rejects_a_gap_longer_than_the_window():
+    with pytest.raises(ValueError, match="must fit inside the winding window"):
+        AirGapSpec.from_window_position_percent(
+            "gap", 0.005, 0.01, 0.021, 0, window_half_height=0.01,
+        )
+
+
+def test_air_gaps_must_fit_the_center_leg_and_not_overlap():
+    core = small_core()
+    insulation = InsulationSpec(c2w_left=0.001, c2w_right=0.001)
+    chamber = initial_chamber(core, insulation)
+    winding = WindingDefinition("primary", RoundConductor("wire", radius=0.001), 1)
+    assignment = (ChamberWindingAssignment(chamber, "primary", 1),)
+
+    with pytest.raises(ValueError, match="must fit inside the winding window"):
+        build_chambered_model(
+            core=core,
+            windings=(winding,),
+            root_chamber=chamber,
+            assignments=assignment,
+            insulation=insulation,
+            air_gaps=(AirGapSpec("outside_gap", 0.005, 0.0045, 0.01, 0.002),),
+        )
+
+    with pytest.raises(ValueError, match="overlap"):
+        build_chambered_model(
+            core=core,
+            windings=(winding,),
+            root_chamber=chamber,
+            assignments=assignment,
+            insulation=insulation,
+            air_gaps=(
+                AirGapSpec("first_gap", 0.005, 0.0, 0.01, 0.004),
+                AirGapSpec("second_gap", 0.005, 0.002, 0.01, 0.004),
+            ),
+        )
 
 
 def test_turns_can_span_chambers_and_parallel_path_metadata_is_preserved():

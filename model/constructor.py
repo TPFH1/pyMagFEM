@@ -282,6 +282,30 @@ class AirGapSpec:
         if self.radial_width <= 0.0 or self.axial_length <= 0.0:
             raise ValueError("air-gap width and length must be positive")
 
+    @classmethod
+    def from_window_position_percent(
+        cls,
+        name: str,
+        center_r: float,
+        radial_width: float,
+        axial_length: float,
+        position_percent: float,
+        window_half_height: float,
+    ) -> AirGapSpec:
+        """Position a gap from centered (0%) to top/bottom aligned (+/-100%)."""
+        values = (position_percent, window_half_height, axial_length)
+        if not all(isfinite(value) for value in values):
+            raise ValueError("air-gap position and window dimensions must be finite")
+        if not -100.0 <= position_percent <= 100.0:
+            raise ValueError("air-gap position_percent must be between -100 and 100")
+        if window_half_height <= 0.0:
+            raise ValueError("window_half_height must be positive")
+        if axial_length <= 0.0 or axial_length > 2.0 * window_half_height:
+            raise ValueError("air-gap length must fit inside the winding window")
+
+        center_z = (position_percent / 100.0) * (window_half_height - axial_length / 2.0)
+        return cls(name, center_r, center_z, radial_width, axial_length)
+
     def to_region(self) -> Region:
         return Region(
             self.name,

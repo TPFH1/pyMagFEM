@@ -730,16 +730,35 @@ def _assignment_centers(
     return placements
 
 
-def _air_gap_region(gap: AirGapSpec, core: CoreSpec) -> Region:
-    radial_min = gap.center_r - gap.radial_width / 2.0
-    radial_max = gap.center_r + gap.radial_width / 2.0
-    axial_min = gap.center_z - gap.axial_length / 2.0
-    axial_max = gap.center_z + gap.axial_length / 2.0
-    if (radial_min < -1e-12 or radial_max > core.window_inner_radius + 1e-12
-            or axial_min < -core.outer_half_height - 1e-12
-            or axial_max > core.outer_half_height + 1e-12):
-        raise ValueError(f"air gap {gap.name!r} must fit inside the center leg")
-    return gap.to_region()
+def _air_gap_regions(air_gaps: Sequence[AirGapSpec], core: CoreSpec) -> list[Region]:
+    regions = []
+    bounds = []
+    for gap in air_gaps:
+        radial_min = gap.center_r - gap.radial_width / 2.0
+        radial_max = gap.center_r + gap.radial_width / 2.0
+        axial_min = gap.center_z - gap.axial_length / 2.0
+        axial_max = gap.center_z + gap.axial_length / 2.0
+        if (radial_min < -1e-12 or radial_max > core.window_inner_radius + 1e-12
+                or axial_min < -core.window_half_height - 1e-12
+                or axial_max > core.window_half_height + 1e-12):
+            raise ValueError(f"air gap {gap.name!r} must fit inside the winding window")
+        for previous_gap, previous_bounds in bounds:
+            previous_radial_min, previous_radial_max, previous_axial_min, previous_axial_max = (
+                previous_bounds
+            )
+            radial_overlap = min(radial_max, previous_radial_max) - max(
+                radial_min, previous_radial_min
+            )
+            axial_overlap = min(axial_max, previous_axial_max) - max(
+                axial_min, previous_axial_min
+            )
+            if radial_overlap > 1e-12 and axial_overlap > 1e-12:
+                raise ValueError(
+                    f"air gaps {previous_gap.name!r} and {gap.name!r} overlap"
+                )
+        bounds.append((gap, (radial_min, radial_max, axial_min, axial_max)))
+        regions.append(gap.to_region())
+    return regions
 
 
 def build_chambered_model(
@@ -863,7 +882,7 @@ def build_chambered_model(
     }
     geometry = Geometry(
         core=core_region,
-        air_gaps=[_air_gap_region(gap, core) for gap in air_gaps],
+        air_gaps=_air_gap_regions(air_gaps, core),
         winding_window=window_region,
         extra={
             "chamber_layout": {

@@ -98,6 +98,64 @@ def test_transformer_equivalent_reconstructs_matrix_and_refers_external_inductan
     assert equivalent.to_dict()["turns_ratio"] == pytest.approx(5)
 
 
+@pytest.mark.parametrize(
+    ("equivalent_type", "options", "expected_ratio", "zero_leakage"),
+    [
+        ("physical_turns_ratio", {"physical_turns_ratio": 4.0}, 4.0, None),
+        ("balanced_leakage", {}, 5.0, None),
+        ("primary_concentrated_leakage", {}, 18.1 / 4, "secondary"),
+        ("secondary_concentrated_leakage", {}, 100 / 18.1, "primary"),
+    ],
+)
+def test_transformer_equivalent_supports_ratio_and_leakage_modes(
+    equivalent_type, options, expected_ratio, zero_leakage,
+):
+    from fem import transformer_equivalent
+
+    matrix = np.array([[100 - 2j, 18 - 0.3j], [18.2 - 0.4j, 4 - 0.1j]]) * 1e-6
+    equivalent = transformer_equivalent(
+        matrix, equivalent_type=equivalent_type, **options,
+    )
+
+    assert equivalent.equivalent_type == equivalent_type
+    assert equivalent.turns_ratio == pytest.approx(expected_ratio)
+    reconstructed = np.array([
+        [equivalent.leakage_primary_h + equivalent.magnetizing_primary_h,
+         equivalent.magnetizing_primary_h / equivalent.turns_ratio],
+        [equivalent.magnetizing_primary_h / equivalent.turns_ratio,
+         equivalent.leakage_secondary_h + equivalent.magnetizing_primary_h / equivalent.turns_ratio**2],
+    ])
+    np.testing.assert_allclose(reconstructed, (matrix.real + matrix.real.T) / 2)
+    if zero_leakage == "primary":
+        assert equivalent.leakage_primary_h == pytest.approx(0.0, abs=1e-18)
+    elif zero_leakage == "secondary":
+        assert equivalent.leakage_secondary_h == pytest.approx(0.0, abs=1e-18)
+
+
+@pytest.mark.parametrize(
+    ("equivalent_type", "options", "message"),
+    [
+        ("unknown", {}, "equivalent_type"),
+        ("physical_turns_ratio", {}, "required"),
+        ("physical_turns_ratio", {"physical_turns_ratio": 0.0}, "finite and positive"),
+        ("balanced_leakage", {"physical_turns_ratio": 2.0}, "only valid"),
+    ],
+)
+def test_transformer_equivalent_rejects_invalid_mode_options(equivalent_type, options, message):
+    from fem import transformer_equivalent
+
+    with pytest.raises(ValueError, match=message):
+        transformer_equivalent(np.eye(2), equivalent_type=equivalent_type, **options)
+
+
+def test_transformer_equivalent_concentrated_modes_reject_zero_mutual():
+    from fem import transformer_equivalent
+
+    for equivalent_type in ("primary_concentrated_leakage", "secondary_concentrated_leakage"):
+        with pytest.raises(ValueError, match="non-zero mutual"):
+            transformer_equivalent(np.diag([2.0, 3.0]), equivalent_type=equivalent_type)
+
+
 @pytest.mark.parametrize("matrix", [np.eye(3), [[0, 1], [1, 1]], [[1, 0], [0, np.nan]]])
 def test_transformer_equivalent_rejects_invalid_matrices(matrix):
     from fem import transformer_equivalent

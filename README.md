@@ -311,8 +311,20 @@ winding="primary", nonlinear_materials=...)`. It iteratively adjusts the
 terminal current to meet the requested voltage phasor, reuses the simulation
 mesh, and supports the same nonlinear core materials as `solve()`.
 
-The inductive T-model uses `sqrt(L11/L22)` and a primary-side magnetizing
-branch. Its external-secondary series term is referred by the ratio squared.
+`fem.transformer_equivalent()` accepts four `equivalent_type` values:
+`"balanced_leakage"` uses `sqrt(L11/L22)` and remains the backward-compatible
+default; `"physical_turns_ratio"` requires the positive `physical_turns_ratio`
+argument; `"primary_concentrated_leakage"` selects the ratio that makes the
+secondary leakage zero; and `"secondary_concentrated_leakage"` selects the
+ratio that makes the primary leakage zero. Each mode reconstructs the same
+real inductance matrix, but reports a different referral ratio and leakage
+split. The physical mode is appropriate when referring terminal quantities by
+the actual winding ratio. The balanced mode is convenient for equal referred
+leakage; the concentrated modes show the limiting all-on-one-side models.
+Negative leakage in a selected mode indicates that the chosen ratio does not
+give a passive branch-by-branch T-model for that matrix. The optional external
+secondary series term is referred by the selected ratio squared.
+
 Operating-point solves copy the model instead of overwriting identification
 inputs. Current phasors use peak amplitudes for loss calculations; loss
 summaries include winding transport/proximity and core contributions without

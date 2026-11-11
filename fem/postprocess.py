@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -562,6 +562,12 @@ class TransformerEquivalent:
     leakage_secondary_h: float
     secondary_series_inductance_h: float
     reciprocity_error_h: float
+    equivalent_type: Literal[
+        "physical_turns_ratio",
+        "balanced_leakage",
+        "primary_concentrated_leakage",
+        "secondary_concentrated_leakage",
+    ] = "balanced_leakage"
 
     @property
     def leakage_secondary_referred_primary_h(self) -> float:
@@ -580,7 +586,7 @@ class TransformerEquivalent:
         return (self.transformer_leakage_referred_primary_h
                 + self.external_inductance_referred_primary_h)
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float | str]:
         return {
             **asdict(self),
             "leakage_secondary_referred_primary_h": self.leakage_secondary_referred_primary_h,
@@ -590,6 +596,7 @@ class TransformerEquivalent:
         }
 
     def print(self) -> None:
+        print(f"Equivalent type: {self.equivalent_type}")
         print(f"Ideal turns ratio: {self.turns_ratio:.6f}:1")
         print(f"Coupling coefficient: {self.coupling_coefficient:.8f}")
         for label, value in (
@@ -610,14 +617,25 @@ def transformer_equivalent(
     matrix_h: np.ndarray,
     *,
     secondary_series_inductance_h: float = 0.0,
+    equivalent_type: Literal[
+        "physical_turns_ratio",
+        "balanced_leakage",
+        "primary_concentrated_leakage",
+        "secondary_concentrated_leakage",
+    ] = "balanced_leakage",
+    physical_turns_ratio: float | None = None,
 ) -> TransformerEquivalent:
     """Extract an inductive T-model from a primary/secondary 2x2 matrix in H.
 
-    Uses real self-inductances, the mean real mutual term, and
-    n=sqrt(L11/L22). The input matrix is not changed. Losses remain in the
-    original complex matrix and are not represented by this inductive model.
-    Optional external secondary series inductance is referred by n squared;
-    it does not change the extracted ratio or intrinsic winding parameters.
+    Uses real self-inductances and the mean real mutual term. ``equivalent_type``
+    selects the referral ratio or the side on which leakage is concentrated.
+    The default, ``balanced_leakage``, uses n=sqrt(L11/L22). The
+    ``physical_turns_ratio`` type requires the positive physical ratio as an
+    additional argument. The two concentrated-leakage types choose n so that
+    the secondary or primary leakage, respectively, is zero. Ratios are signed
+    when needed to preserve mutual-inductance polarity. The input matrix is not
+    changed; losses remain in the original complex matrix. Optional external
+    secondary series inductance is referred by the selected ratio squared.
     """
     matrix = np.asarray(matrix_h, dtype=complex)
     if matrix.shape != (2, 2) or not np.isfinite(matrix).all():
@@ -629,7 +647,31 @@ def transformer_equivalent(
     if l11 <= 0 or l22 <= 0:
         raise ValueError("self-inductances must be positive")
     mutual = float((matrix[0, 1].real + matrix[1, 0].real) / 2.0)
-    ratio = float(np.sqrt(l11 / l22))
+    equivalent_types = {
+        "physical_turns_ratio",
+        "balanced_leakage",
+        "primary_concentrated_leakage",
+        "secondary_concentrated_leakage",
+    }
+    if equivalent_type not in equivalent_types:
+        raise ValueError(f"equivalent_type must be one of {sorted(equivalent_types)}")
+    if equivalent_type == "physical_turns_ratio":
+        if physical_turns_ratio is None:
+            raise ValueError("physical_turns_ratio is required for this equivalent_type")
+        ratio = float(physical_turns_ratio)
+        if not np.isfinite(ratio) or ratio <= 0.0:
+            raise ValueError("physical_turns_ratio must be finite and positive")
+    else:
+        if physical_turns_ratio is not None:
+            raise ValueError("physical_turns_ratio is only valid for equivalent_type='physical_turns_ratio'")
+        if equivalent_type == "balanced_leakage":
+            ratio = float(np.sqrt(l11 / l22))
+        elif mutual == 0.0:
+            raise ValueError("concentrated-leakage equivalents require non-zero mutual inductance")
+        elif equivalent_type == "primary_concentrated_leakage":
+            ratio = mutual / l22
+        else:
+            ratio = l11 / mutual
     magnetizing = ratio * mutual
     return TransformerEquivalent(
         turns_ratio=ratio,
@@ -639,6 +681,7 @@ def transformer_equivalent(
         leakage_secondary_h=l22 - mutual / ratio,
         secondary_series_inductance_h=external,
         reciprocity_error_h=float(abs(matrix[0, 1] - matrix[1, 0])),
+        equivalent_type=equivalent_type,
     )
 
 

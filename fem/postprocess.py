@@ -603,6 +603,7 @@ class TransformerEquivalent:
             ("Primary magnetizing inductance", self.magnetizing_primary_h),
             ("Primary series leakage", self.leakage_primary_h),
             ("Secondary series leakage", self.leakage_secondary_h),
+            ("Secondary series leakage referred to primary", self.leakage_secondary_referred_primary_h),
             ("Transformer-only leakage referred to primary", self.transformer_leakage_referred_primary_h),
             ("External secondary series inductance", self.secondary_series_inductance_h),
             ("External inductance referred to primary", self.external_inductance_referred_primary_h),

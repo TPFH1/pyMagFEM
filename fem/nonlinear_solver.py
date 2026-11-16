@@ -25,7 +25,12 @@ def solve_nonlinear_frequency_domain(
     **kwargs,
 ):
     """Solve a field-dependent frequency-domain problem by fixed-point iteration."""
-    if max_iterations <= 0 or not 0.0 < relaxation <= 1.0:
+    if (
+        max_iterations <= 0
+        or not np.isfinite(tolerance)
+        or tolerance <= 0.0
+        or not 0.0 < relaxation <= 1.0
+    ):
         raise ValueError("invalid nonlinear iteration settings")
     previous = np.zeros((len(mesh.triangles), 2), dtype=float)
     convergence_floor = max(

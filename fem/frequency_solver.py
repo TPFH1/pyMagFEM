@@ -291,6 +291,7 @@ def solve_frequency_domain(
     material_conductivities: Mapping[str, complex] | None = None,
     _assembly_cache: dict[str, object] | None = None,
     timing: dict[str, float] | None = None,
+    nonlinear_tolerance: float | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]] | tuple[
     np.ndarray, dict[str, np.ndarray], dict[str, complex]
 ]:
@@ -300,7 +301,9 @@ def solve_frequency_domain(
     selects ``"total_current"`` or ``"fixed_current_density"`` per conductor.
     Fixed-density conductors use ``fixed_current_density`` and do not receive a
     ring-voltage unknown. Conductivity and skin effect are assembled only for
-    total-current conductors.
+    total-current conductors. ``nonlinear_tolerance`` overrides the relative
+    update threshold when ``nonlinear_materials`` is supplied; ``None`` keeps
+    the nonlinear solver default.
     """
     if frequency < 0 or conductivity < 0:
         raise ValueError("frequency and conductivity must be non-negative")
@@ -308,6 +311,12 @@ def solve_frequency_domain(
         raise ValueError("conductivity must be positive when returning conductor voltages")
     if phasor_convention not in {"cosine", "sine"}:
         raise ValueError("phasor_convention must be 'cosine' or 'sine'")
+    if nonlinear_tolerance is not None and (
+        not np.isfinite(nonlinear_tolerance) or nonlinear_tolerance <= 0.0
+    ):
+        raise ValueError("nonlinear_tolerance must be finite and positive")
+    if nonlinear_tolerance is not None and not nonlinear_materials:
+        raise ValueError("nonlinear_tolerance requires nonlinear_materials")
     omega = 2.0 * np.pi * float(frequency)
     # For Re{u exp(+j omega t)}, d/dt becomes +j*omega.  The sine
     # convention used by the public API reverses that sign.
@@ -336,6 +345,11 @@ def solve_frequency_domain(
     # 1/r and therefore does not have the required uniform-current limit.
     if nonlinear_materials:
         from .nonlinear_solver import solve_nonlinear_frequency_domain
+        nonlinear_options = (
+            {"tolerance": nonlinear_tolerance}
+            if nonlinear_tolerance is not None
+            else {}
+        )
         return solve_nonlinear_frequency_domain(
             mesh,
             frequency,
@@ -349,6 +363,7 @@ def solve_frequency_domain(
             litz_properties=litz_properties,
             nonlinear_materials=nonlinear_materials,
             material_conductivities=material_conductivities,
+            **nonlinear_options,
         )
     if omega == 0.0:
         areas = {name: _conductor_area(mesh, indices) for name, indices in mesh.conductor_regions.items()}

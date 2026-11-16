@@ -85,9 +85,11 @@ def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_request
         frequency_hz=250e3,
         currents={"primary": 2.0 + 0.0j},
         nonlinear_materials={"core": nonlinear_core},
+        nonlinear_tolerance=0.0075,
     )
 
     assert solve_options["nonlinear_materials"] == {"core": nonlinear_core}
+    assert solve_options["nonlinear_tolerance"] == 0.0075
     assert result.nonlinear_material is nonlinear_core
     assert result.nonlinear_materials == {"core": nonlinear_core}
 
@@ -100,6 +102,46 @@ def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_request
     monkeypatch.setattr("fem.simulation.core_losses", fake_core_losses)
     result.core_losses()
     assert loss_options["nonlinear_material"] is nonlinear_core
+
+    nonlinear_solver_options = {}
+
+    def fake_nonlinear_solve(mesh, frequency, currents, **kwargs):
+        nonlinear_solver_options.update(kwargs)
+        return np.zeros(len(mesh.points), dtype=complex), {}, {}
+
+    monkeypatch.setattr(
+        "fem.nonlinear_solver.solve_nonlinear_frequency_domain",
+        fake_nonlinear_solve,
+    )
+    solve_frequency_domain(
+        _mesh(),
+        250e3,
+        {"conductor_0": 1.0},
+        nonlinear_materials={"core": nonlinear_core},
+        nonlinear_tolerance=0.0075,
+    )
+    assert nonlinear_solver_options["tolerance"] == 0.0075
+
+    nonlinear_solver_options.clear()
+    solve_frequency_domain(
+        _mesh(),
+        250e3,
+        {"conductor_0": 1.0},
+        nonlinear_materials={"core": nonlinear_core},
+    )
+    assert "tolerance" not in nonlinear_solver_options
+
+    import pytest
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        solve_operating_point(
+            component,
+            mesh=mesh,
+            frequency_hz=250e3,
+            currents={"primary": 2.0 + 0.0j},
+            nonlinear_materials={"core": nonlinear_core},
+            nonlinear_tolerance=0.0,
+        )
 
 
 def test_voltage_simulation_converges_and_forwards_nonlinear_materials(monkeypatch):

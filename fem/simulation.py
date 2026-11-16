@@ -366,12 +366,15 @@ def solve_operating_point(
     currents: Mapping[str, complex],
     mesh: AxisymmetricMesh | None = None,
     nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
+    nonlinear_tolerance: float | None = None,
 ) -> FrequencyDomainResult:
     """Solve terminal-current phasors on an independent model copy.
 
     Phasor amplitudes follow the model convention (peak amplitudes for loss
     calculations). Missing circuits are open; unknown circuits are rejected.
     Geometry and materials are unchanged, allowing reuse of an existing mesh.
+    ``nonlinear_tolerance`` overrides the relative update threshold when
+    nonlinear materials are supplied.
     """
     if not np.isfinite(frequency_hz) or frequency_hz < 0:
         raise ValueError("frequency_hz must be finite and non-negative")
@@ -379,6 +382,12 @@ def solve_operating_point(
     circuits.update(winding.circuit for winding in model.windings)
     if set(currents) - circuits:
         raise ValueError("currents reference unknown circuits")
+    if nonlinear_tolerance is not None and not nonlinear_materials:
+        raise ValueError("nonlinear_tolerance requires nonlinear_materials")
+    if nonlinear_tolerance is not None and (
+        not np.isfinite(nonlinear_tolerance) or nonlinear_tolerance <= 0.0
+    ):
+        raise ValueError("nonlinear_tolerance must be finite and positive")
     values = {name: complex(currents.get(name, 0.0)) for name in circuits}
     if not values or not all(np.isfinite(value) for value in values.values()):
         raise ValueError("currents must contain finite phasors for a model with circuits")
@@ -388,7 +397,10 @@ def solve_operating_point(
     simulation = FrequencyDomainSimulation(component, mesh=mesh)
     if nonlinear_materials is None:
         return simulation.solve()
-    return simulation.solve(nonlinear_materials=nonlinear_materials)
+    return simulation.solve(
+        nonlinear_materials=nonlinear_materials,
+        nonlinear_tolerance=nonlinear_tolerance,
+    )
 
 
 @dataclass
@@ -483,7 +495,14 @@ class FrequencyDomainSimulation:
         self,
         *,
         nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
+        nonlinear_tolerance: float | None = None,
     ) -> FrequencyDomainResult:
+        if nonlinear_tolerance is not None and (
+            not np.isfinite(nonlinear_tolerance) or nonlinear_tolerance <= 0.0
+        ):
+            raise ValueError("nonlinear_tolerance must be finite and positive")
+        if nonlinear_tolerance is not None and not nonlinear_materials:
+            raise ValueError("nonlinear_tolerance requires nonlinear_materials")
         mesh = self.mesh
         if mesh is None:
             mesh = self.create_mesh()
@@ -532,6 +551,8 @@ class FrequencyDomainSimulation:
         solve_options = {}
         if nonlinear_materials is not None:
             solve_options["nonlinear_materials"] = nonlinear_materials
+        if nonlinear_tolerance is not None:
+            solve_options["nonlinear_tolerance"] = nonlinear_tolerance
         solved = solve_frequency_domain(
             mesh,
             frequency=frequency,

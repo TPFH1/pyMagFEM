@@ -21,6 +21,38 @@ def winding_from_centers(name, conductor, centers, *, parallel_paths=1):
     return WindingSpec(name, conductor, name, layers, parallel_paths=parallel_paths)
 
 
+@pytest.mark.parametrize("omitted", ["bundle_diameter", "fill_factor", "strands", "strand_diameter"])
+def test_litz_factory_solves_any_omitted_parameter(omitted):
+    full = {
+        "bundle_diameter": 2.7e-3, "fill_factor": 500 * (0.1e-3 / 2.7e-3) ** 2,
+        "strands": 500, "strand_diameter": 0.1e-3,
+    }
+    conductor = RoundConductor.litz("litz", **{k: v for k, v in full.items() if k != omitted})
+    assert conductor.height == pytest.approx(full["bundle_diameter"])
+    assert conductor.strands == full["strands"]
+    assert conductor.strand_diameter == pytest.approx(full["strand_diameter"])
+    assert conductor.fill_factor == pytest.approx(full["fill_factor"])
+
+
+def test_litz_factory_rounds_calculated_strand_count():
+    conductor = RoundConductor.litz(
+        "litz", bundle_diameter=2.7e-3, fill_factor=0.6, strand_diameter=0.1e-3,
+    )
+    assert conductor.strands == round(0.6 * 27.0**2)
+    assert conductor.fill_factor == pytest.approx(0.6, abs=1e-3)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"fill_factor": 0.6, "strands": 500},
+    {"bundle_diameter": 2.7e-3, "fill_factor": 0.6, "strands": 500, "strand_diameter": 1e-4},
+    {"fill_factor": 1.2, "strands": 500, "strand_diameter": 1e-4},
+    {"fill_factor": 0.6, "strands": 500, "strand_diameter": -1e-4},
+])
+def test_litz_factory_rejects_invalid_parameter_sets(kwargs):
+    with pytest.raises(ValueError):
+        RoundConductor.litz("litz", **kwargs)
+
+
 @pytest.mark.parametrize("matrix", [
     [[0.001, 0.002], [0.003, 0.001]],
     [[0.001, -0.001], [-0.001, 0.001]],

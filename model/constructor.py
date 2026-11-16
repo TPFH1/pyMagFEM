@@ -77,6 +77,62 @@ class RoundConductor(ConductorSpec):
             ):
                 raise ValueError("litz conductors require a positive strand diameter")
 
+    @classmethod
+    def litz(
+        cls,
+        name: str,
+        *,
+        bundle_diameter: float | None = None,
+        fill_factor: float | None = None,
+        strands: int | None = None,
+        strand_diameter: float | None = None,
+        material: str = "copper",
+    ) -> RoundConductor:
+        """Create a Litz conductor from any three of its four related parameters.
+
+        Bundle diameter and strand diameter are in metres. The fill factor is the
+        copper area fraction ``strands * strand_diameter**2 / bundle_diameter**2``.
+        Exactly one of the four parameters must be ``None`` and is calculated from
+        the other three. A calculated strand count is rounded to the nearest integer,
+        so the resulting ``fill_factor`` can differ slightly from the requested one.
+        """
+        given = {
+            "bundle_diameter": bundle_diameter,
+            "fill_factor": fill_factor,
+            "strands": strands,
+            "strand_diameter": strand_diameter,
+        }
+        missing = [key for key, value in given.items() if value is None]
+        if len(missing) != 1:
+            raise ValueError(
+                "litz conductors require exactly three of bundle_diameter, fill_factor, "
+                f"strands, and strand_diameter; got {sorted(set(given) - set(missing))}"
+            )
+        for key, value in given.items():
+            if value is not None and (
+                isinstance(value, bool) or not isfinite(value) or value <= 0.0
+            ):
+                raise ValueError(f"litz {key} must be positive and finite")
+        if fill_factor is not None and fill_factor > 1.0:
+            raise ValueError("litz fill_factor must be in the interval (0, 1]")
+
+        if bundle_diameter is None:
+            bundle_diameter = strand_diameter * (strands / fill_factor) ** 0.5
+        elif strands is None:
+            strands = round(fill_factor * (bundle_diameter / strand_diameter) ** 2)
+            if strands < 1:
+                raise ValueError("litz parameters give fewer than one strand")
+        elif strand_diameter is None:
+            strand_diameter = bundle_diameter * (fill_factor / strands) ** 0.5
+        return cls(
+            name,
+            material=material,
+            construction="litz",
+            radius=bundle_diameter / 2.0,
+            strands=strands,
+            strand_diameter=strand_diameter,
+        )
+
     @property
     def height(self) -> float:
         return 2.0 * self.radius

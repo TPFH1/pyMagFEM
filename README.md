@@ -115,6 +115,10 @@ must be divisible by the parallel-path count.
 Litz wires use the existing `fem.litz` Meeker model. Specify `construction="litz"`,
 `strands`, and the bare `strand_diameter` on a `RoundConductor`. The high-level
 simulation derives each wire's fill factor from its strand and envelope areas.
+Alternatively, `RoundConductor.litz(name, ...)` takes any three of `bundle_diameter`,
+`fill_factor`, `strands`, and `strand_diameter` (the fourth must stay `None`) and
+calculates the remaining one. A calculated strand count is rounded to an integer, so
+the resulting `fill_factor` can differ slightly from the requested one.
 `result.winding_losses()` returns winding-level transport/skin and proximity
 losses, summing every physical bundle; `result.report()` uses the same losses.
 

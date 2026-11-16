@@ -48,6 +48,7 @@ from .schema import (
     normalize,
     validate,
 )
+from .volumes import ComponentVolumeSummary, physical_volume_summary
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -57,6 +58,7 @@ __all__ = [
     "Chamber",
     "ChamberWindingAssignment",
     "Circuit",
+    "ComponentVolumeSummary",
     "Conductor",
     "ConductorSpec",
     "Constructor",
@@ -90,6 +92,7 @@ __all__ = [
     "initial_chamber",
     "load",
     "normalize",
+    "physical_volume_summary",
     "split_chamber",
     "validate",
 ]

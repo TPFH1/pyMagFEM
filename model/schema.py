@@ -12,6 +12,8 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from .volumes import ComponentVolumeSummary
+
 SCHEMA_VERSION = 1
 
 
@@ -179,6 +181,12 @@ class FEMModel:
     output: OutputSettings = field(default_factory=OutputSettings)
     extensions: dict[str, Any] = field(default_factory=dict)
     _legacy: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def physical_volume_summary(self) -> ComponentVolumeSummary:
+        """Return the physical core-material and copper volumes for this model."""
+        from .volumes import physical_volume_summary
+
+        return physical_volume_summary(self)
 
     def legacy_geometry(self) -> dict[str, Any]:
         """Return the normalized flat geometry mapping used by the FEM backend."""

@@ -88,7 +88,7 @@ def plot_winding_scheme(
     winding_labels: Mapping[str, str] | None = None,
     label_fontsize: float = 8.0,
 ):
-    """Plot component outlines and label each physical conductor by winding turn."""
+    """Plot component outlines and conductor labels within the core bounds."""
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Circle, Polygon, Rectangle
@@ -102,7 +102,7 @@ def plot_winding_scheme(
         _, ax = plt.subplots()
     scale, unit = _length_scale(length_unit)
 
-    def add_region_outline(region, *, edgecolor, linestyle="-"):
+    def add_region_outline(region, *, edgecolor, linestyle="-", clip_on=True):
         corners = np.asarray(region.corners, dtype=float)
         if corners.ndim != 2 or corners.shape[0] < 3 or corners.shape[1] < 2:
             raise ValueError(f"region {region.name!r} requires at least three corners")
@@ -121,9 +121,10 @@ def plot_winding_scheme(
             edgecolor=edgecolor,
             linestyle=linestyle,
             linewidth=1.0,
+            clip_on=clip_on,
         ))
 
-    add_region_outline(component.geometry.core, edgecolor="#333333")
+    add_region_outline(component.geometry.core, edgecolor="#333333", clip_on=False)
     add_region_outline(component.geometry.winding_window, edgecolor="#777777")
     for gap in component.geometry.air_gaps:
         if gap.center is not None and gap.size is not None:
@@ -204,10 +205,10 @@ def plot_winding_scheme(
                 clip_on=True,
             )
 
-    ax.relim()
-    ax.autoscale_view()
-    ax.set_xlim(left=0.0)
-    ax.set_aspect("equal")
+    core_corners = scale * np.asarray(component.geometry.core.corners, dtype=float)
+    ax.set_xlim(core_corners[:, 0].min(), core_corners[:, 0].max())
+    ax.set_ylim(core_corners[:, 1].min(), core_corners[:, 1].max())
+    ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"r [{unit}]")
     ax.set_ylabel(f"z [{unit}]")
     ax.spines["top"].set_visible(False)

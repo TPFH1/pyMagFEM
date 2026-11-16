@@ -1,7 +1,9 @@
 from dataclasses import asdict
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from fem import plot_winding_scheme
 from model import (
@@ -347,7 +349,8 @@ def test_integer_conductor_counts_split_parallel_paths_across_axial_sections():
     assert [circuit.turns for circuit in component.circuits] == [12, 3]
 
 
-def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
+@pytest.mark.parametrize(("length_unit", "scale"), [("mm", 1e3), ("m", 1.0)])
+def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path(length_unit, scale):
     primary = RoundConductor("primary_wire", radius=0.001)
     secondary = RoundConductor("secondary_wire", radius=0.001)
     windings = (
@@ -370,20 +373,35 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
     ).layout(core_area=100e-6, windings=windings, insulation=insulation)
     component = layout.build_model()
 
-    ax = plot_winding_scheme(component)
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=200)
+    canvas = FigureCanvasAgg(fig)
+    ax.set_aspect("equal", adjustable="datalim")
+    plot_winding_scheme(component, ax=ax, length_unit=length_unit)
     try:
+        canvas.draw()
         assert [text.get_text() for text in ax.texts] == ["p1", "p2", "s1", "s1"]
         assert len(ax.patches) == 6
-        assert ax.get_xlabel() == "r [mm]"
-        assert ax.get_ylabel() == "z [mm]"
+        assert ax.get_xlabel() == f"r [{length_unit}]"
+        assert ax.get_ylabel() == f"z [{length_unit}]"
         assert not ax.spines["top"].get_visible()
         assert not ax.spines["right"].get_visible()
         assert ax.spines["left"].get_visible()
         assert ax.spines["bottom"].get_visible()
         core_corners = component.geometry.core.corners
-        assert ax.get_xlim()[1] >= max(point[0] for point in core_corners) * 1e3
-        assert ax.get_ylim()[0] <= min(point[1] for point in core_corners) * 1e3
-        assert ax.get_ylim()[1] >= max(point[1] for point in core_corners) * 1e3
+        assert ax.get_xlim() == pytest.approx(
+            (min(point[0] for point in core_corners) * scale,
+             max(point[0] for point in core_corners) * scale)
+        )
+        assert ax.get_ylim() == pytest.approx(
+            (min(point[1] for point in core_corners) * scale,
+             max(point[1] for point in core_corners) * scale)
+        )
+        right_edge, middle = ax.transData.transform(
+            (ax.get_xlim()[1], sum(ax.get_ylim()) / 2)
+        )
+        pixels = np.asarray(canvas.buffer_rgba())
+        row = round(pixels.shape[0] - middle)
+        assert pixels[row, int(right_edge) + 1:int(right_edge) + 3, 0].min() < 160
     finally:
         plt.close(ax.figure)
 

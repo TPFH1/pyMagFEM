@@ -376,6 +376,10 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path():
         assert len(ax.patches) == 6
         assert ax.get_xlabel() == "r [mm]"
         assert ax.get_ylabel() == "z [mm]"
+        assert not ax.spines["top"].get_visible()
+        assert not ax.spines["right"].get_visible()
+        assert ax.spines["left"].get_visible()
+        assert ax.spines["bottom"].get_visible()
         core_corners = component.geometry.core.corners
         assert ax.get_xlim()[1] >= max(point[0] for point in core_corners) * 1e3
         assert ax.get_ylim()[0] <= min(point[1] for point in core_corners) * 1e3

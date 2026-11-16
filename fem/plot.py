@@ -210,6 +210,8 @@ def plot_winding_scheme(
     ax.set_aspect("equal")
     ax.set_xlabel(f"r [{unit}]")
     ax.set_ylabel(f"z [{unit}]")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     ax.set_title("Winding scheme")
     return ax
 

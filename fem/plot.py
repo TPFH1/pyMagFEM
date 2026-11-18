@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from matplotlib.colors import LogNorm
+from matplotlib.ticker import MultipleLocator
 
 from model.schema import FEMModel
 
@@ -139,8 +140,9 @@ def plot_winding_scheme(
     length_unit: str = "mm",
     winding_labels: Mapping[str, str] | None = None,
     label_fontsize: float = 8.0,
+    show_mm_grid: bool = False,
 ):
-    """Plot component outlines and conductor labels within the core bounds."""
+    """Plot component outlines and conductor labels, optionally with a 1 mm grid."""
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Circle, Polygon, Rectangle
@@ -263,6 +265,12 @@ def plot_winding_scheme(
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"r [{unit}]")
     ax.set_ylabel(f"z [{unit}]")
+    if show_mm_grid:
+        grid_spacing = scale * 1e-3
+        ax.xaxis.set_minor_locator(MultipleLocator(grid_spacing))
+        ax.yaxis.set_minor_locator(MultipleLocator(grid_spacing))
+        ax.set_axisbelow(True)
+        ax.grid(which="both", color="#dddddd", linewidth=0.5)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.set_title("Winding scheme")

@@ -349,8 +349,18 @@ def test_integer_conductor_counts_split_parallel_paths_across_axial_sections():
     assert [circuit.turns for circuit in component.circuits] == [12, 3]
 
 
-@pytest.mark.parametrize(("length_unit", "scale"), [("mm", 1e3), ("m", 1.0)])
-def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path(length_unit, scale):
+@pytest.mark.parametrize(
+    ("length_unit", "scale", "show_mm_grid"),
+    [
+        ("mm", 1e3, False),
+        ("m", 1.0, False),
+        ("mm", 1e3, True),
+        ("m", 1.0, True),
+    ],
+)
+def test_plot_winding_scheme_draws_geometry_labels_and_optional_mm_grid(
+    length_unit, scale, show_mm_grid
+):
     primary = RoundConductor("primary_wire", radius=0.001)
     secondary = RoundConductor("secondary_wire", radius=0.001)
     windings = (
@@ -376,7 +386,12 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path(length_unit
     fig, ax = plt.subplots(figsize=(6, 4), dpi=200)
     canvas = FigureCanvasAgg(fig)
     ax.set_aspect("equal", adjustable="datalim")
-    plot_winding_scheme(component, ax=ax, length_unit=length_unit)
+    if show_mm_grid:
+        plot_winding_scheme(
+            component, ax=ax, length_unit=length_unit, show_mm_grid=True
+        )
+    else:
+        plot_winding_scheme(component, ax=ax, length_unit=length_unit)
     try:
         canvas.draw()
         assert [text.get_text() for text in ax.texts] == ["p1", "p2", "s1", "s1"]
@@ -387,6 +402,22 @@ def test_plot_winding_scheme_draws_geometry_and_labels_turns_by_path(length_unit
         assert not ax.spines["right"].get_visible()
         assert ax.spines["left"].get_visible()
         assert ax.spines["bottom"].get_visible()
+        if show_mm_grid:
+            grid_spacing = scale * 1e-3
+            for axis in (ax.xaxis, ax.yaxis):
+                locations = axis.get_minorticklocs()
+                assert len(locations) > 1
+                assert np.allclose(
+                    np.diff(locations) / grid_spacing,
+                    np.round(np.diff(locations) / grid_spacing),
+                )
+                assert all(tick.gridline.get_visible() for tick in axis.get_minor_ticks())
+        else:
+            assert all(
+                not tick.gridline.get_visible()
+                for axis in (ax.xaxis, ax.yaxis)
+                for tick in axis.get_minor_ticks()
+            )
         core_corners = component.geometry.core.corners
         assert ax.get_xlim() == pytest.approx(
             (min(point[0] for point in core_corners) * scale,

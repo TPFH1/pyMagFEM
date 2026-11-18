@@ -159,6 +159,15 @@ The default is `"linear"`. Logarithmic scaling applies to field colours and
 the colourbar, not the spatial axes. It masks non-positive values and requires
 at least one positive value.
 
+Permeability plots show core elements only. `PhysicalField.MU` defaults to
+the local magnitude `|B| / (mu0 * |H|)`. `MU_REAL` and `MU_IMAG` show the
+real and signed imaginary parts of relative permeability, using the nonlinear
+material evaluated at local flux-density magnitude in tesla when supplied.
+Otherwise they use the mesh core material, including its permeability loss
+angle. An explicit `relative_permeability_model` overrides the material model.
+The convention is `mu_r = mu_r_real - j * mu_r_loss`, so lossy materials have
+negative `MU_IMAG` values; use the default linear colour scale for that field.
+
 The repository includes executable examples in [`notebooks/`](notebooks/).
 Start Jupyter from the repository root:
 

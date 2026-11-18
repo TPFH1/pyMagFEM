@@ -266,6 +266,15 @@ def plot_physical_field(
     ``color_scale="log"`` uses logarithmic colour normalization, masking
     non-positive values and requiring at least one positive value. This
     affects field colours and the colourbar, not the spatial axis scales.
+
+    Permeability fields are shown only in the core. ``MU`` defaults to the
+    magnitude ``|B| / (mu0 * |H|)``. ``MU_REAL`` and ``MU_IMAG`` show the real
+    and signed imaginary parts of relative permeability evaluated at local
+    ``|B|`` in tesla. An explicit ``relative_permeability_model`` overrides
+    the nonlinear material, which otherwise takes precedence over mesh
+    material properties. Linear materials include their configured loss angle.
+    Lossy materials use a negative imaginary part, so use a linear colour scale
+    for ``MU_IMAG``.
     """
     try:
         import matplotlib.pyplot as plt
@@ -339,25 +348,33 @@ def plot_physical_field(
             )
         label = "|B|/(μ₀|H|) [-]"
     elif field in {PhysicalField.MU_REAL, PhysicalField.MU_IMAG}:
-        if magnetic_field is None:
-            raise ValueError("magnetic_field is required for permeability")
-        b_values = np.linalg.norm(magnetic_field, axis=1)
+        core_elements = np.flatnonzero(np.asarray(mesh.regions) == "core")
         core_material = (mesh.materials or {}).get("core")
-        if (
-            core_material is not None
-            and hasattr(core_material, "relative_permeability_model")
-        ):
-            relative_permeability = np.asarray(
-                core_material.relative_permeability_model(b_values), dtype=complex
-            )
-            values[:] = (
+        permeability_model = relative_permeability_model
+        if permeability_model is None and nonlinear_material is not None:
+            permeability_model = nonlinear_material.relative_permeability_at
+        if permeability_model is None:
+            permeability_model = getattr(core_material, "relative_permeability_model", None)
+        if core_elements.size:
+            if permeability_model is not None:
+                if a_phi is None:
+                    raise ValueError("a_phi is required for field-dependent permeability")
+                b_values = np.linalg.norm(
+                    magnetic_flux_density(mesh, a_phi)[core_elements], axis=1
+                )
+                relative_permeability = np.asarray(
+                    permeability_model(np.maximum(b_values, 1e-12)), dtype=complex
+                )
+            else:
+                relative_permeability = np.asarray(complex_relative_permeability(
+                    float(getattr(core_material, "relative_permeability", 1.0)),
+                    float(getattr(core_material, "permeability_loss_angle_deg", 0.0)),
+                ))
+            values[core_elements] = (
                 relative_permeability.real
                 if field is PhysicalField.MU_REAL
                 else relative_permeability.imag
             )
-        else:
-            relative = float(getattr(core_material, "relative_permeability", 1.0)) if core_material is not None else 1.0
-            values[:] = relative if field is PhysicalField.MU_REAL else 0.0
         label = "μr real [-]" if field is PhysicalField.MU_REAL else "μr imag [-]"
     else:
         if current_densities is None: raise ValueError("current_densities is required for loss density")

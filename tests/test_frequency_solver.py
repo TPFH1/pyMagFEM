@@ -479,6 +479,113 @@ def test_result_plot_exposes_and_forwards_color_scale():
         result.plot_physical_field(PhysicalField.J, color_scale="log")
 
 
+def test_result_plot_uses_local_nonlinear_permeability_components():
+    from matplotlib.figure import Figure
+
+    from fem import FrequencyDomainResult, NonlinearCoreMaterial, PhysicalField
+
+    mesh = _mesh()
+    mesh.regions = np.array(["core", "core", "air", "winding"])
+    mesh.materials = {"core": Material("core", relative_permeability=3300.0)}
+    component = FEMModel(materials=list(mesh.materials.values()))
+    a_phi = np.array([0.0, 0.1, 0.3, 0.15, 0.12], dtype=complex)
+    local_b = np.linalg.norm(magnetic_flux_density(mesh, a_phi), axis=1)
+    core_elements = np.array([0, 1])
+    interpolation_inputs = []
+
+    def permeability(b):
+        interpolation_inputs.append(b.copy())
+        return 2000.0 / (1.0 + b) - 1j * (100.0 + 200.0 * b)
+
+    nonlinear = NonlinearCoreMaterial(permeability, 0j, 90.0, 50e3)
+    expected = permeability(local_b[core_elements])
+    for materials in (
+        {"nonlinear_material": nonlinear},
+        {"nonlinear_materials": {"core": nonlinear}},
+    ):
+        result = FrequencyDomainResult.from_solution(
+            component, mesh, a_phi, {}, **materials,
+        )
+        for field, expected_values in (
+            (PhysicalField.MU_REAL, expected.real),
+            (PhysicalField.MU_IMAG, expected.imag),
+            (PhysicalField.MU, np.abs(expected)),
+        ):
+            axis = Figure().subplots()
+            result.plot_physical_field(field, ax=axis)
+            values = axis.collections[0].get_array()
+            np.testing.assert_array_equal(np.ma.getmaskarray(values), [False, False, True, True])
+            np.testing.assert_allclose(values[core_elements], expected_values)
+            if field is not PhysicalField.MU:
+                np.testing.assert_allclose(interpolation_inputs[-1], local_b[core_elements])
+
+
+def test_plot_permeability_components_use_b_for_model_overrides():
+    from types import SimpleNamespace
+
+    from matplotlib.figure import Figure
+
+    from fem import PhysicalField, plot_physical_field
+
+    mesh = _mesh()
+    mesh.regions = np.array(["core", "core", "air", "winding"])
+    a_phi = np.array([0.0, 0.1, 0.3, 0.15, 0.12], dtype=complex)
+    local_b = np.linalg.norm(magnetic_flux_density(mesh, a_phi), axis=1)[:2]
+    inputs = []
+
+    def permeability(b):
+        inputs.append(b.copy())
+        return 1000.0 + b - 1j * (10.0 + b)
+
+    mesh.materials = {"core": SimpleNamespace(relative_permeability_model=permeability)}
+    for options, expected in (
+        ({}, 1000.0 + local_b - 1j * (10.0 + local_b)),
+        ({"relative_permeability_model": lambda b: 2 * permeability(b)},
+         2 * (1000.0 + local_b - 1j * (10.0 + local_b))),
+    ):
+        for field, component in (
+            (PhysicalField.MU_REAL, expected.real),
+            (PhysicalField.MU_IMAG, expected.imag),
+        ):
+            axis = Figure().subplots()
+            plot_physical_field(
+                mesh, field, a_phi=a_phi, magnetic_field=np.ones((4, 2)) * 1e6,
+                ax=axis, **options,
+            )
+            values = axis.collections[0].get_array()
+            np.testing.assert_allclose(inputs[-1], local_b)
+            np.testing.assert_allclose(values[:2], component)
+            np.testing.assert_array_equal(np.ma.getmaskarray(values), [False, False, True, True])
+
+
+def test_plot_linear_permeability_components_include_loss_angle():
+    import pytest
+    from matplotlib.figure import Figure
+
+    from fem import PhysicalField, plot_physical_field
+
+    mesh = _mesh()
+    mesh.regions = np.array(["core", "core", "air", "winding"])
+    for angle in (0.0, 30.0):
+        mesh.materials = {"core": Material(
+            "core", relative_permeability=3300.0, permeability_loss_angle_deg=angle,
+        )}
+        expected = 3300.0 * np.exp(-1j * np.deg2rad(angle))
+        for field, component in (
+            (PhysicalField.MU_REAL, expected.real),
+            (PhysicalField.MU_IMAG, expected.imag),
+        ):
+            axis = Figure().subplots()
+            plot_physical_field(mesh, field, ax=axis)
+            values = axis.collections[0].get_array()
+            np.testing.assert_allclose(values[:2], component, atol=1e-12)
+            np.testing.assert_array_equal(np.ma.getmaskarray(values), [False, False, True, True])
+        with pytest.raises(ValueError, match="positive value"):
+            plot_physical_field(
+                mesh, PhysicalField.MU_IMAG, ax=Figure().subplots(), color_scale="log",
+            )
+
+
 def test_result_plot_uses_per_conductor_litz_properties_for_loss_density():
     from matplotlib.figure import Figure
 

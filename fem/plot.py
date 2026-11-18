@@ -76,11 +76,11 @@ def plot_nonlinear_core_material(
     mu_ax.plot(b_t, mu_r.real, label=r"$\mathrm{Re}(\mu_r)$")
     mu_ax.plot(b_t, -mu_r.imag, label=r"$-\mathrm{Im}(\mu_r)$")
     mu_ax.plot(b_t, np.abs(mu_r), "--", label=r"$|\mu_r|$")
-    mu_ax.set_ylabel("Relative permeability")
+    mu_ax.set_ylabel("Relative\npermeability")
     mu_ax.legend()
     loss_ax.semilogy(b_t, p_mag_w_per_m3)
     loss_ax.set(
-        ylabel=r"Magnetic loss density" + r"$p_\mathrm{mag}$ [W/m$^3$]",
+        ylabel="Magnetic loss density\n" + r"$p_\mathrm{mag}$ [W/m$^3$]",
         xlabel=r"Peak flux density $|B|$ [T]",
         xlim=(0.0, b_max_t),
     )

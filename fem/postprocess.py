@@ -15,8 +15,9 @@ if TYPE_CHECKING:
     from .simulation import FrequencyDomainResult
 
 from .litz import LitzLoss, litz_loss
+from .losses import element_volumes, loss_densities
 from .nonlinear import NonlinearCoreMaterial
-from .physics import complex_conductivity, core_electric_loss_density, core_magnetic_loss_density
+from .physics import complex_conductivity
 
 MU0 = 4e-7 * np.pi
 from .preprocess import AxisymmetricMesh
@@ -24,7 +25,7 @@ from .preprocess import AxisymmetricMesh
 
 @dataclass(frozen=True)
 class WindingLosses:
-    """Per-turn and total loss for one homogenized Litz winding."""
+    """Per-physical-turn and total loss in watts for a solid or Litz winding."""
 
     per_turn: tuple[LitzLoss, ...]
 
@@ -56,66 +57,38 @@ def core_losses(
     relative_permittivity: float = 0.0,
     permittivity_loss_angle_deg: float = 0.0,
     nonlinear_material: NonlinearCoreMaterial | None = None,
+    core_permeability: complex | None = None,
+    core_conductivity: complex | None = None,
 ) -> tuple[float, float, float]:
-    """Return magnetic, electrical, and total core loss in watts."""
+    """Integrate magnetic, electrical, and total core losses in watts.
+
+    ``magnetic_field`` contains peak H phasors in A/m, one two-component vector
+    per mesh element, and ``frequency`` is in Hz. ``core_permeability`` is an
+    absolute complex value in H/m and ``core_conductivity`` is in S/m; these
+    override the corresponding linear scalar/loss-angle inputs without applying
+    their loss angles again.
+
+    A nonlinear material takes precedence over linear properties and is
+    evaluated at local ``|B|`` from nodal ``a_phi`` in Wb/m. That field is also
+    required for nonzero AC core conduction/dielectric loss. Only core elements
+    are integrated, using the shared density evaluator and ``2*pi*r`` volumes.
+    """
     from .physics import complex_relative_permeability
 
-    core_indices = np.flatnonzero(np.asarray(mesh.regions) == "core")
-    magnetic_values = np.zeros(len(mesh.triangles), dtype=float)
-    if nonlinear_material is not None:
-        b_values = (
-            np.linalg.norm(magnetic_flux_density(mesh, a_phi), axis=1)
-            if a_phi is not None
-            else np.zeros(len(mesh.triangles))
-        )
-        local_mu = nonlinear_material.relative_permeability_at(b_values)
-        magnetic_values[core_indices] = core_magnetic_loss_density(
-            magnetic_field[core_indices], MU0 * local_mu[core_indices], frequency
-        )
-    else:
-        magnetic_values[core_indices] = core_magnetic_loss_density(
-            magnetic_field[core_indices],
-            MU0 * complex_relative_permeability(relative_permeability, loss_angle_deg),
-            frequency,
-        )
-    electric_values = np.zeros(len(mesh.triangles), dtype=float)
-    if a_phi is not None and (nonlinear_material is not None or conductivity > 0.0):
-        conductivity_complex = (
-            nonlinear_material.conductivity
-            if nonlinear_material is not None
-            else complex_conductivity(
-                conductivity,
-                relative_permittivity,
-                permittivity_loss_angle_deg,
-                frequency,
-            )
-        )
-        element_a_phi = np.mean(a_phi[mesh.triangles[core_indices]], axis=1)
-        electric_field = -1j * 2.0 * np.pi * frequency * element_a_phi
-        electric_values[core_indices] = core_electric_loss_density(
-            electric_field, conductivity_complex
-        )
-    magnetic_total = 0.0
-    electric_total = 0.0
-    for element in np.flatnonzero(np.asarray(mesh.regions) == "core"):
-        nodes = mesh.triangles[element]
-        xy = mesh.points[nodes]
-        area = (
-            abs(
-                np.linalg.det(
-                    np.array(
-                        [
-                            [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
-                            [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
-                        ]
-                    )
-                )
-            )
-            / 2.0
-        )
-        volume_factor = 2.0 * np.pi * float(np.mean(xy[:, 0])) * area
-        magnetic_total += volume_factor * magnetic_values[element]
-        electric_total += volume_factor * electric_values[element]
+    densities = loss_densities(
+        mesh, frequency, a_phi=a_phi, magnetic_field=magnetic_field,
+        nonlinear_material=nonlinear_material, conductor_names=[],
+        core_permeability=(
+            core_permeability if core_permeability is not None
+            else MU0 * complex_relative_permeability(relative_permeability, loss_angle_deg)
+        ),
+        core_conductivity=core_conductivity if core_conductivity is not None else complex_conductivity(
+            conductivity, relative_permittivity, permittivity_loss_angle_deg, frequency,
+        ),
+    )
+    volumes = element_volumes(mesh)
+    magnetic_total = np.dot(volumes, densities.magnetic)
+    electric_total = np.dot(volumes, densities.electrical)
     return float(magnetic_total), float(electric_total), float(magnetic_total + electric_total)
 
 
@@ -131,36 +104,24 @@ def winding_copper_losses(
     conductivity: float = 58e6,
     conductor_names: list[str] | None = None,
 ) -> WindingLosses:
-    """Return classical solid-conductor loss for each turn and the winding."""
-    if conductivity <= 0.0:
-        raise ValueError("conductivity must be positive")
-    names = conductor_names or [
-        f"conductor_{index}" for index in range(len(mesh.conductor_regions or {}))
-    ]
-    losses = []
-    for name in names:
-        density = np.asarray(current_densities[name])
-        loss = 0.0
-        for element in np.asarray(mesh.conductor_regions[name], dtype=int):
-            nodes = mesh.triangles[element]
-            xy = mesh.points[nodes]
-            area = (
-                abs(
-                    np.linalg.det(
-                        np.array(
-                            [
-                                [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
-                                [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
-                            ]
-                        )
-                    )
-                )
-                / 2.0
-            )
-            radius = float(np.mean(xy[:, 0]))
-            loss += 0.5 * 2.0 * np.pi * radius * area * abs(density[element]) ** 2 / conductivity
-        losses.append(LitzLoss(float(loss), 0.0))
-    return WindingLosses(tuple(losses))
+    """Integrate solid-conductor Joule losses in watts from peak J in A/m^2.
+
+    ``conductivity`` is bulk S/m. Density arrays follow full mesh element order;
+    ``conductor_names`` selects physical turns in the requested output order.
+    This mesh-only helper cannot infer Litz construction. Use the model-aware
+    result's ``winding_losses()`` for effective bundle transport/proximity loss.
+    """
+    names = list(mesh.conductor_regions or {}) if conductor_names is None else conductor_names
+    densities = loss_densities(
+        mesh, 0.0, current_densities=current_densities, conductivity=conductivity,
+        conductor_names=names, include_core=False,
+    )
+    volumes = element_volumes(mesh)
+    return WindingLosses(tuple(
+        LitzLoss(float(np.dot(volumes[elements], densities.electrical[elements])), 0.0)
+        for name in names
+        for elements in [np.asarray(mesh.conductor_regions[name], dtype=int)]
+    ))
 
 
 def analytical_dc_winding_resistances(

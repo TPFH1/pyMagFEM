@@ -11,16 +11,11 @@ from matplotlib.colors import LogNorm
 from model.schema import FEMModel
 
 from .litz import LitzProperties
+from .losses import loss_densities
 from .physics import (
-    complex_conductivity,
     complex_relative_permeability,
-    core_electric_loss_density,
-    core_magnetic_loss_density,
     eddy_current_density,
     electric_field_from_a_phi,
-    electric_loss_density,
-    magnetic_loss_density,
-    total_litz_loss_density,
 )
 from .postprocess import magnetic_field_intensity, magnetic_flux_density
 from .preprocess import AxisymmetricMesh
@@ -256,6 +251,9 @@ def plot_physical_field(
     levels: int = 20,
     color_scale: Literal["linear", "log"] = "linear",
     length_unit: str = "mm",
+    conductor_conductivities: Mapping[str, complex] | None = None,
+    core_permeability: complex | None = None,
+    core_conductivity: complex | None = None,
 ):
     """Plot a scalar physical field while preserving the full mesh extent.
 
@@ -275,6 +273,14 @@ def plot_physical_field(
     material properties. Linear materials include their configured loss angle.
     Lossy materials use a negative imaginary part, so use a linear colour scale
     for ``MU_IMAG``.
+
+    All loss selectors use the same full-mesh decomposition: electrical loss
+    includes core conduction/dielectric and solid/Litz transport loss, while
+    magnetic loss includes core magnetic and Litz proximity loss. The total is
+    their sum. ``magnetic_field`` must be supplied when these losses require H.
+    ``core_permeability`` is absolute complex H/m; ``core_conductivity`` and
+    ``conductor_conductivities`` are complex S/m overrides. Nonlinear core and
+    effective Litz properties take precedence over their linear/bulk overrides.
     """
     try:
         import matplotlib.pyplot as plt
@@ -377,88 +383,27 @@ def plot_physical_field(
             )
         label = "μr real [-]" if field is PhysicalField.MU_REAL else "μr imag [-]"
     else:
-        if current_densities is None: raise ValueError("current_densities is required for loss density")
+        properties = {
+            name: properties
+            for name in (mesh.conductor_regions or {})
+            if (properties := _litz_properties_for_conductor(litz_properties, name)) is not None
+        }
+        densities = loss_densities(
+            mesh, frequency, a_phi=a_phi, current_densities=current_densities,
+            magnetic_field=magnetic_field, conductivity=conductivity,
+            conductor_conductivities=conductor_conductivities, litz_properties=properties,
+            nonlinear_material=nonlinear_material, core_permeability=core_permeability,
+            core_conductivity=core_conductivity,
+        )
         if field is PhysicalField.ELECTRIC_LOSS_DENSITY:
-            for name, elements in (mesh.conductor_regions or {}).items():
-                values[elements] = electric_loss_density(
-                    current_densities[name][elements], conductivity
-                )
+            values = densities.electrical
             label = "electric loss density [W/m³]"
-        elif field is PhysicalField.LOSS_DENSITY:
-            if magnetic_field is None:
-                raise ValueError("magnetic_field is required for loss density")
-            for name, elements in (mesh.conductor_regions or {}).items():
-                conductor_litz_properties = _litz_properties_for_conductor(
-                    litz_properties, name
-                )
-                if conductor_litz_properties is None:
-                    values[elements] = electric_loss_density(
-                        current_densities[name][elements], conductivity
-                    )
-                else:
-                    values[elements] = total_litz_loss_density(
-                        current_densities[name][elements], magnetic_field[elements],
-                        conductor_litz_properties.resistivity,
-                        conductor_litz_properties.absolute_permeability,
-                        frequency,
-                    )
-            core_elements = np.flatnonzero(np.asarray(mesh.regions) == "core")
-            core_material = (mesh.materials or {}).get("core")
-            if core_elements.size and (core_material is not None or nonlinear_material is not None):
-                if nonlinear_material is not None and a_phi is not None:
-                    local_b = np.linalg.norm(
-                        magnetic_flux_density(mesh, a_phi), axis=1
-                    )
-                    core_mu = nonlinear_material.absolute_permeability_at(local_b)
-                    core_sigma = nonlinear_material.conductivity
-                else:
-                    if core_material is None:
-                        raise ValueError("core material properties are required for loss density")
-                    core_mu = MU0 * complex_relative_permeability(
-                        float(getattr(core_material, "relative_permeability", 1.0)),
-                        float(getattr(core_material, "permeability_loss_angle_deg", 0.0)),
-                    )
-                    core_sigma = complex_conductivity(
-                        float(getattr(core_material, "conductivity", 0.0)),
-                        float(getattr(core_material, "relative_permittivity", 0.0)),
-                        float(getattr(core_material, "permittivity_loss_angle_deg", 0.0)),
-                        frequency,
-                    )
-                if np.ndim(core_mu):
-                    core_mu_values = core_mu[core_elements]
-                else:
-                    core_mu_values = core_mu
-                values[core_elements] = core_magnetic_loss_density(
-                    magnetic_field[core_elements], core_mu_values, frequency
-                )
-                if a_phi is not None:
-                    electric_field = -1j * 2.0 * np.pi * frequency * (
-                        a_phi[mesh.triangles[core_elements]].mean(axis=1)
-                    )
-                    values[core_elements] += core_electric_loss_density(
-                        electric_field, core_sigma
-                    )
-            label = "loss density [W/m³]"
-        else:
-            if magnetic_field is None:
-                raise ValueError("magnetic_field is required for magnetic loss density")
-            if litz_properties is None:
-                raise ValueError("litz_properties are required for magnetic loss density")
-            plotted_litz_density = False
-            for name, elements in (mesh.conductor_regions or {}).items():
-                conductor_litz_properties = _litz_properties_for_conductor(
-                    litz_properties, name
-                )
-                if conductor_litz_properties is not None:
-                    values[elements] = magnetic_loss_density(
-                        magnetic_field[elements],
-                        conductor_litz_properties.absolute_permeability,
-                        frequency,
-                    )
-                    plotted_litz_density = True
-            if not plotted_litz_density:
-                raise ValueError("no Litz properties match the mesh conductor regions")
+        elif field is PhysicalField.MAG_LOSS_DENSITY:
+            values = densities.magnetic
             label = "magnetic loss density [W/m³]"
+        else:
+            values = densities.total
+            label = "loss density [W/m³]"
     mask = np.array([str(region) in selected for region in mesh.regions])
     values[~mask] = np.nan
     finite_values = values[np.isfinite(values)]

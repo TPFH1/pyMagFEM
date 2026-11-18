@@ -10,8 +10,11 @@ import numpy as np
 
 from model import FEMModel
 
+from .constitutive import conductor_properties, core_properties, effective_conductivities
 from .frequency_solver import solve_frequency_domain
-from .litz import LitzProperties, meeker_litz_properties
+from .litz import LitzLoss, LitzProperties
+from .losses import LossDensities, element_volumes, loss_densities
+from .materials import MU0
 from .nonlinear import NonlinearCoreMaterial
 from .physics import complex_relative_permeability
 from .postprocess import (
@@ -20,9 +23,7 @@ from .postprocess import (
     magnetic_field_intensity,
     magnetic_flux_density,
     winding_complex_powers,
-    winding_copper_losses,
     winding_flux_linkages,
-    winding_litz_losses,
     winding_terminal_voltages,
     winding_voltages,
 )
@@ -95,7 +96,13 @@ def _conductivity(model: FEMModel) -> float:
 
 @dataclass
 class FrequencyDomainResult:
-    """Solved fields with model context for safe post-processing."""
+    """Solved peak-phasor fields with constitutive data for post-processing.
+
+    Per-conductor conductivity and effective Litz properties are retained on
+    the result so losses and voltages use the solve's material values rather
+    than a single winding-wide copper conductivity. Linear core conductivity
+    includes the dielectric contribution at ``frequency_hz``.
+    """
 
     model: FEMModel
     mesh: AxisymmetricMesh
@@ -108,6 +115,20 @@ class FrequencyDomainResult:
     nonlinear_material: Any | None = None
     nonlinear_materials: dict[str, NonlinearCoreMaterial] = field(default_factory=dict)
     litz_properties: dict[str, LitzProperties] = field(default_factory=dict)
+    conductor_conductivities: dict[str, complex] = field(default_factory=dict)
+    core_conductivity: complex | None = None
+
+    def __post_init__(self) -> None:
+        """Fill model-derived property maps without replacing supplied solve data."""
+        conductivities, properties = conductor_properties(self.model, self.frequency_hz)
+        self.conductor_conductivities = {**conductivities, **self.conductor_conductivities}
+        self.litz_properties = {**properties, **self.litz_properties}
+        if self.core_conductivity is None:
+            core_name = self.model.geometry.core.material if self.model.geometry.core else "core"
+            material = _material_map(self.model).get(
+                core_name, (self.mesh.materials or {}).get("core"),
+            )
+            _, self.core_conductivity = core_properties(material, self.frequency_hz)
 
     @classmethod
     def from_solution(
@@ -121,8 +142,18 @@ class FrequencyDomainResult:
         turn_voltages: dict[str, complex] | None = None,
         nonlinear_material: Any | None = None,
         nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
+        litz_properties: Mapping[str, LitzProperties] | None = None,
+        conductor_conductivities: Mapping[str, complex] | None = None,
     ) -> FrequencyDomainResult:
-        """Wrap an externally solved field in the model-aware result API."""
+        """Wrap an externally solved field without solving or changing its arrays.
+
+        ``frequency_hz`` defaults to the model excitation. Missing conductor
+        properties are derived at that frequency; supplied ``litz_properties``
+        and ``conductor_conductivities`` override matching derived entries.
+        Pass the effective properties used by the external solve if they differ
+        from the model. Effective Litz conductivity takes precedence over a
+        matching conductivity-map entry during post-processing.
+        """
         return cls(
             model=model,
             mesh=mesh,
@@ -136,6 +167,8 @@ class FrequencyDomainResult:
             relative_permeability=_permeability_map(model),
             nonlinear_material=nonlinear_material,
             nonlinear_materials=dict(nonlinear_materials or {}),
+            litz_properties=dict(litz_properties or {}),
+            conductor_conductivities=dict(conductor_conductivities or {}),
         )
 
     def _core_nonlinear_material(self) -> NonlinearCoreMaterial | None:
@@ -159,13 +192,53 @@ class FrequencyDomainResult:
         return field_intensity
 
     def winding_copper_losses(self) -> WindingLosses:
-        return winding_copper_losses(
-            self.mesh,
-            self.current_densities,
-            conductivity=self.conductivity,
+        """Return solid losses; use winding_losses() for a result containing Litz bundles."""
+        if self.litz_properties:
+            raise ValueError("winding_copper_losses is solid-only; use winding_losses for Litz")
+        return WindingLosses(tuple(self._conductor_losses().values()))
+
+    def loss_densities(self) -> LossDensities:
+        """Return full-mesh electrical, magnetic, and total densities in W/m^3.
+
+        Uses the retained conductor properties and local nonlinear core
+        permeability when present. Arrays follow mesh triangle order and are
+        identical to those used by loss plots and axisymmetric loss integration.
+        Lossless air and solid-conductor magnetic components are zero.
+        """
+        return loss_densities(
+            self.mesh, self.frequency_hz, a_phi=self.a_phi,
+            current_densities=self.current_densities, magnetic_field=self.magnetic_field_intensity(),
+            conductivity=self.conductivity, conductor_conductivities=self.conductor_conductivities,
+            litz_properties=self.litz_properties, nonlinear_material=self._core_nonlinear_material(),
+            core_permeability=MU0 * self.relative_permeability["core"],
+            core_conductivity=self.core_conductivity,
         )
 
+    def _conductor_losses(self) -> dict[str, LitzLoss]:
+        """Integrate transport and proximity watts for each physical conductor."""
+        densities = loss_densities(
+            self.mesh, self.frequency_hz, current_densities=self.current_densities,
+            magnetic_field=self.magnetic_field_intensity(), conductivity=self.conductivity,
+            conductor_conductivities=self.conductor_conductivities,
+            litz_properties=self.litz_properties, include_core=False,
+        )
+        volumes = element_volumes(self.mesh)
+        return {
+            name: LitzLoss(
+                float(np.dot(volumes[elements], densities.electrical[elements])),
+                float(np.dot(volumes[elements], densities.magnetic[elements])),
+            )
+            for name, indices in (self.mesh.conductor_regions or {}).items()
+            for elements in [np.asarray(indices, dtype=int)]
+        }
+
     def core_losses(self) -> tuple[float, float, float]:
+        """Return integrated magnetic, electrical, and total core losses in watts.
+
+        Retained complex linear properties already contain their loss angles.
+        A nonlinear material instead supplies local permeability and core
+        conductivity, using the same evaluator as the density plots.
+        """
         core_material = _material_map(self.model).get(
             self.model.geometry.core.material
             if self.model.geometry.core is not None
@@ -176,7 +249,7 @@ class FrequencyDomainResult:
             self.magnetic_field_intensity(),
             self.frequency_hz,
             relative_permeability=(
-                float(self.relative_permeability["core"].real)
+                float(abs(self.relative_permeability["core"]))
             ),
             loss_angle_deg=float(
                 getattr(core_material, "permeability_loss_angle_deg", 0.0)
@@ -190,6 +263,8 @@ class FrequencyDomainResult:
                 getattr(core_material, "permittivity_loss_angle_deg", 0.0)
             ),
             nonlinear_material=self._core_nonlinear_material(),
+            core_permeability=MU0 * self.relative_permeability["core"],
+            core_conductivity=self.core_conductivity,
         )
 
     def winding_losses(self) -> dict[str, WindingLosses]:
@@ -198,30 +273,14 @@ class FrequencyDomainResult:
         Parallel paths are already included in the solved bundle currents.
         Sum their losses; do not divide the resulting watts by the path count.
         """
-        definitions = {conductor.name: conductor for conductor in self.model.conductors}
-        field_intensity = self.magnetic_field_intensity()
+        conductor_losses = self._conductor_losses()
         losses = {}
         conductor_index = 0
         for winding in self.model.windings:
             per_turn = []
             for turn in winding.turns:
-                definition = definitions.get(turn.conductor or winding.conductor)
                 name = f"conductor_{conductor_index}"
-                if definition is not None and definition.construction == "litz":
-                    fill_factor = definition.strands * (
-                        definition.strand_diameter / (2.0 * definition.radius)
-                    ) ** 2
-                    bundle_losses = winding_litz_losses(
-                        self.mesh, self.current_densities, field_intensity, self.frequency_hz,
-                        conductor_names=[name], strand_diameter=definition.strand_diameter,
-                        fill_factor=fill_factor, conductivity=self.conductivity,
-                    )
-                else:
-                    bundle_losses = winding_copper_losses(
-                        self.mesh, self.current_densities, conductivity=self.conductivity,
-                        conductor_names=[name],
-                    )
-                per_turn.extend(bundle_losses.per_turn)
+                per_turn.append(conductor_losses[name])
                 conductor_index += 1
             losses[winding.name] = WindingLosses(tuple(per_turn))
         return losses
@@ -251,10 +310,10 @@ class FrequencyDomainResult:
             self.frequency_hz,
             conductivity=self.conductivity,
             phasor_convention=self.model.excitation.phasor_convention,
-            conductor_conductivities={
-                name: properties.conductivity
-                for name, properties in self.litz_properties.items()
-            },
+            conductor_conductivities=effective_conductivities(
+                list(self.mesh.conductor_regions or {}), self.conductivity,
+                self.conductor_conductivities, self.litz_properties,
+            ),
         )
 
     def winding_terminal_voltages(self) -> dict[str, complex]:
@@ -295,6 +354,9 @@ class FrequencyDomainResult:
         kwargs.setdefault("litz_properties", self.litz_properties)
         kwargs.setdefault("nonlinear_material", self._core_nonlinear_material())
         kwargs.setdefault("frequency", self.frequency_hz)
+        kwargs.setdefault("conductor_conductivities", self.conductor_conductivities)
+        kwargs.setdefault("core_permeability", MU0 * self.relative_permeability["core"])
+        kwargs.setdefault("core_conductivity", self.core_conductivity)
         return plot_physical_field(self.mesh, field, color_scale=color_scale, **kwargs)
 
     def report(self):
@@ -320,7 +382,8 @@ class FrequencyDomainResult:
                 target[winding.name] = winding_losses[winding.name]
         if not self.model.windings:
             winding_name = next(iter(linkages), "winding")
-            solid_losses[winding_name] = self.winding_copper_losses()
+            target = litz_losses if self.litz_properties else solid_losses
+            target[winding_name] = WindingLosses(tuple(self._conductor_losses().values()))
         return build_result_report(
             self.model,
             self.mesh,
@@ -497,6 +560,14 @@ class FrequencyDomainSimulation:
         nonlinear_materials: Mapping[str, NonlinearCoreMaterial] | None = None,
         nonlinear_tolerance: float | None = None,
     ) -> FrequencyDomainResult:
+        """Solve the configured peak-current excitation and retain material data.
+
+        Solid conductors use their assigned material conductivity and total
+        current constraints. Litz bundles retain the existing impressed-density
+        source model, with effective properties used for losses and voltages.
+        Nonlinear core permeability and conductivity are forwarded together;
+        ``nonlinear_tolerance`` optionally relaxes or tightens field convergence.
+        """
         if nonlinear_tolerance is not None and (
             not np.isfinite(nonlinear_tolerance) or nonlinear_tolerance <= 0.0
         ):
@@ -512,29 +583,18 @@ class FrequencyDomainSimulation:
         conductivity = _conductivity(self.model)
         from .solver import conductor_area
 
-        definitions = {conductor.name: conductor for conductor in self.model.conductors}
         current_modes = {}
         fixed_current_density = {}
-        litz_properties = {}
+        conductor_conductivities, litz_properties = conductor_properties(self.model, frequency)
+        core_name = self.model.geometry.core.material if self.model.geometry.core else "core"
+        _, core_conductivity = core_properties(
+            _material_map(self.model).get(core_name, (mesh.materials or {}).get("core")), frequency,
+        )
         conductor_index = 0
         for winding in self.model.windings:
             for turn in winding.turns:
-                definition = definitions.get(turn.conductor or winding.conductor)
-                if definition is not None and definition.construction == "litz":
-                    if (definition.radius is None or definition.radius <= 0
-                            or definition.strands is None or definition.strands <= 0
-                            or definition.strand_diameter is None):
-                        raise ValueError("Litz conductors require radius, strand count, and strand diameter")
-                    name = f"conductor_{conductor_index}"
-                    fill_factor = definition.strands * (
-                        definition.strand_diameter / (2.0 * definition.radius)
-                    ) ** 2
-                    litz_properties[name] = meeker_litz_properties(
-                        frequency,
-                        strand_diameter=definition.strand_diameter,
-                        fill_factor=fill_factor,
-                        conductivity=conductivity,
-                    )
+                name = f"conductor_{conductor_index}"
+                if name in litz_properties:
                     current_modes[name] = "fixed_current_density"
                     circuit = turn.circuit or winding.circuit
                     current = complex(currents.get(circuit, currents.get(winding.name, 0.0)))
@@ -564,6 +624,8 @@ class FrequencyDomainSimulation:
             current_modes=current_modes,
             fixed_current_density=fixed_current_density,
             litz_properties=litz_properties,
+            conductor_conductivities=conductor_conductivities,
+            material_conductivities={"core": core_conductivity},
             **solve_options,
         )
         a_phi, densities, voltages = cast(
@@ -582,4 +644,6 @@ class FrequencyDomainSimulation:
             nonlinear_material=(nonlinear_materials or {}).get("core"),
             nonlinear_materials=dict(nonlinear_materials or {}),
             litz_properties=litz_properties,
+            conductor_conductivities=conductor_conductivities,
+            core_conductivity=core_conductivity,
         )

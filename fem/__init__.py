@@ -9,6 +9,7 @@ from .frequency_solver import (
                           solve_frequency_domain,
 )
 from .litz import LitzLoss, LitzProperties, litz_loss, meeker_litz_properties
+from .losses import LossDensities, loss_densities
 from .materials import (
                           COPPER_CONDUCTIVITY_AT_20C_S_PER_M,
                           COPPER_REFERENCE_TEMPERATURE_C,
@@ -75,6 +76,7 @@ __all__ = [
                           "FrequencyDomainSimulation",
                           "LitzLoss",
                           "LitzProperties",
+                          "LossDensities",
                           "NonlinearCoreMaterial",
                           "PhysicalField",
                           "SimulationResultReport",
@@ -105,6 +107,7 @@ __all__ = [
                           "litz_loss",
                           "litz_transport_loss_density",
                           "load_geometry",
+                          "loss_densities",
                           "magnetic_energy",
                           "magnetic_field_intensity",
                           "magnetic_flux_density",

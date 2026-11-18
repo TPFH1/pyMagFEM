@@ -168,6 +168,40 @@ angle. An explicit `relative_permeability_model` overrides the material model.
 The convention is `mu_r = mu_r_real - j * mu_r_loss`, so lossy materials have
 negative `MU_IMAG` values; use the default linear colour scale for that field.
 
+All three loss plots use the same elementwise decomposition for linear and
+nonlinear cores, solid conductors, and Litz bundles:
+
+```python
+result.plot_physical_field(fem.PhysicalField.LOSS_DENSITY)
+result.plot_physical_field(fem.PhysicalField.MAG_LOSS_DENSITY)
+result.plot_physical_field(fem.PhysicalField.ELECTRIC_LOSS_DENSITY)
+densities = result.loss_densities()  # electrical, magnetic, total arrays in W/m^3
+```
+
+Electrical density includes core conduction/dielectric loss, solid Joule loss,
+and Litz transport/skin loss using effective bundle resistivity. Magnetic
+density includes core magnetic loss and Litz proximity loss. Their sum is the
+total density; lossless air and solid-conductor magnetic losses are zero.
+Integrated core, winding, and report losses use these same densities with
+axisymmetric `2*pi*r` volume weights. Linear core loss angles are applied once,
+and dielectric losses are included even when DC core conductivity is zero.
+
+The solver resolves conductivity from each conductor's assigned material and
+retains effective Litz properties on its result. `FrequencyDomainResult.from_solution`
+derives these properties from the model and frequency; pass `litz_properties`
+and `conductor_conductivities` when wrapping a solution with explicitly overridden
+properties. These mappings are also accepted by low-level frequency and voltage
+solves. Nonlinear core conductivity takes precedence over static core data in
+both the solve and loss calculation.
+Impressed-current and DC field-only solves still allow zero bulk conductivity
+when no conductive constraint or voltage reconstruction requires it.
+
+`result.winding_losses()` is the model-aware solid/Litz API.
+`result.winding_copper_losses()` is solid-only and rejects Litz results.
+The low-level `copper_loss`, `winding_copper_losses`, and `electric_loss_density`
+helpers are solid-only; bare copper conductivity is still the correct input
+when deriving effective Litz properties or DC resistance from actual copper area.
+
 The repository includes executable examples in [`notebooks/`](notebooks/).
 Start Jupyter from the repository root:
 

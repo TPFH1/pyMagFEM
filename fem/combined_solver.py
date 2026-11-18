@@ -22,6 +22,7 @@ def solve_combined(
     current_modes: Mapping[str, str] | str = "total_current",
     fixed_current_density: Mapping[str, object] | None = None,
     litz_properties: Mapping[str, LitzProperties] | None = None,
+    conductor_conductivities: Mapping[str, complex] | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Solve a model containing mixed conductor excitation modes.
 
@@ -30,6 +31,11 @@ def solve_combined(
     ``"fixed_current_density"`` for conductors carrying an impressed density.
     The latter values are supplied through ``fixed_current_density`` and may
     be scalar, full-mesh, or conductor-element arrays.
+
+    ``conductor_conductivities`` supplies complex S/m per physical conductor,
+    overriding the scalar bulk fallback. Effective ``litz_properties`` take
+    precedence. Property resolution and assembly are delegated to the same
+    frequency-domain solver used by single-mode solves.
     """
     return solve_frequency_domain(
         mesh,
@@ -42,4 +48,5 @@ def solve_combined(
         current_modes=current_modes,
         fixed_current_density=fixed_current_density,
         litz_properties=litz_properties,
+        conductor_conductivities=conductor_conductivities,
     )

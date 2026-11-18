@@ -205,7 +205,8 @@ def test_transformer_report_separates_losses_and_skips_zero_current_inductance(m
     from fem.simulation import FrequencyDomainResult
 
     mesh = _mesh()
-    mesh.conductor_regions["conductor_1"] = np.arange(4)
+    mesh.conductor_regions["conductor_0"] = np.array([0, 2])
+    mesh.conductor_regions["conductor_1"] = np.array([1, 3])
     component = FEMModel(
         windings=[
             Winding("primary", turns=[TurnPlacement(center=[1.5, 0.5])]),

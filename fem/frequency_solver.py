@@ -17,6 +17,7 @@ import numpy as np
 from scipy.sparse import bmat, coo_matrix, lil_matrix
 from scipy.sparse.linalg import spsolve
 
+from .constitutive import effective_conductivities
 from .litz import LitzProperties
 from .nonlinear import NonlinearCoreMaterial
 from .physics import complex_conductivity, complex_relative_permeability
@@ -292,6 +293,7 @@ def solve_frequency_domain(
     _assembly_cache: dict[str, object] | None = None,
     timing: dict[str, float] | None = None,
     nonlinear_tolerance: float | None = None,
+    conductor_conductivities: Mapping[str, complex] | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]] | tuple[
     np.ndarray, dict[str, np.ndarray], dict[str, complex]
 ]:
@@ -304,6 +306,13 @@ def solve_frequency_domain(
     total-current conductors. ``nonlinear_tolerance`` overrides the relative
     update threshold when ``nonlinear_materials`` is supplied; ``None`` keeps
     the nonlinear solver default.
+
+    ``conductor_conductivities`` maps physical conductor names to complex S/m
+    and overrides the scalar bulk ``conductivity`` fallback. Effective Litz
+    conductivity takes precedence over both. The resolved values are used
+    consistently for conductive assembly, current constraints, and AC/DC ring
+    voltages. ``material_conductivities`` overrides mesh region properties;
+    nonlinear materials supply their own region conductivity at every iteration.
     """
     if frequency < 0 or conductivity < 0:
         raise ValueError("frequency and conductivity must be non-negative")
@@ -335,6 +344,11 @@ def solve_frequency_domain(
             raise TypeError(f"Litz properties for '{name}' must be LitzProperties")
     fixed_density = _conductor_values(mesh, fixed_current_density, names)
     constrained_names = [name for name in names if modes[name] == "total_current"]
+    # Impressed-density sources and DC solves without voltages do not use Ohm's law.
+    sigma_names = constrained_names if omega != 0.0 or return_voltages else []
+    sigma_by_conductor = effective_conductivities(
+        sigma_names, conductivity, conductor_conductivities, litz_properties_by_conductor,
+    )
     constrained_indices = {name: index for index, name in enumerate(constrained_names)}
     name_indices = {name: index for index, name in enumerate(names)}
     for name in names:
@@ -363,6 +377,7 @@ def solve_frequency_domain(
             litz_properties=litz_properties,
             nonlinear_materials=nonlinear_materials,
             material_conductivities=material_conductivities,
+            conductor_conductivities=conductor_conductivities,
             **nonlinear_options,
         )
     if omega == 0.0:
@@ -394,7 +409,7 @@ def solve_frequency_domain(
             )
         if return_voltages:
             voltages = {
-                name: target[name] * 2.0 * np.pi / (float(conductivity) * sum(
+                name: target[name] * 2.0 * np.pi / (sigma_by_conductor[name] * sum(
                     _element_area_over_radius(mesh, element)
                     for element in indices
                 ))
@@ -405,8 +420,6 @@ def solve_frequency_domain(
         return values.astype(complex), densities
     mu_r = {"core": 1000.0, "air": 1.0, "winding": 1.0}
     conductivity_by_region = {"core": 0.0, "air": 0.0, "winding": conductivity}
-    if material_conductivities:
-        conductivity_by_region.update(material_conductivities)
     if mesh.materials:
         mu_r.update({
             name: complex_relative_permeability(
@@ -426,6 +439,8 @@ def solve_frequency_domain(
         })
     if relative_permeability:
         mu_r.update(relative_permeability)
+    if material_conductivities:
+        conductivity_by_region.update(material_conductivities)
     if timing is not None:
         timing.clear()
     assembly_start = time.perf_counter()
@@ -493,9 +508,13 @@ def solve_frequency_domain(
                 k_rows.append(int(ni))
                 k_cols.append(int(nj))
                 k_data.append(complex(ke[i, j]))
-        # Conductivity exists only in conductor elements.  In particular, core
-        # and air must not contribute an eddy-current mass term.
-        if abs(conductivity_by_region.get(str(region), 0.0)) > 0.0 and (
+        # Conductive core and constrained conductors contribute induced currents;
+        # impressed-density conductors keep their prescribed source instead.
+        element_conductivity = (
+            sigma_by_conductor.get(conductor_name, 0.0) if conductor_name is not None
+            else conductivity_by_region.get(str(region), 0.0)
+        )
+        if abs(element_conductivity) > 0.0 and (
             str(region) == "core"
             or element_constrained[ei] >= 0
         ):
@@ -517,10 +536,6 @@ def solve_frequency_domain(
                             (radii[i] + radii[j]) / 30.0
                             + radii[k] / 60.0
                         )
-            element_conductivity = (
-                litz.conductivity if litz is not None
-                else conductivity_by_region.get(str(region), conductivity)
-            )
             me = me_r * element_conductivity
         else:
             me = None
@@ -555,9 +570,7 @@ def solve_frequency_domain(
                 # Ring voltage source: E_source=V/(2*pi*r).  In the magnetic
                 # equation, r*E_source cancels the 1/r.  In the current
                 # constraint, the 1/r remains and is integrated separately.
-                element_conductivity = (
-                    litz.conductivity if litz is not None else conductivity
-                )
+                element_conductivity = sigma_by_conductor[name]
                 b = area * rb * element_conductivity / (2.0 * np.pi)
                 areas[ci] += area
                 inverse_radius = 0.0
@@ -625,8 +638,7 @@ def solve_frequency_domain(
     constrained_conductivities = np.empty(len(constrained_names), dtype=complex)
     for i in range(len(constrained_names)):
         name = constrained_names[i]
-        litz = litz_properties_by_conductor.get(name)
-        element_conductivity = litz.conductivity if litz is not None else conductivity
+        element_conductivity = sigma_by_conductor[name]
         constrained_conductivities[i] = element_conductivity
         H[i, i] = element_conductivity * inv_r_integrals[i] / (2.0 * np.pi)
     # The two block rows are the magnetic equation and the current
@@ -672,8 +684,7 @@ def solve_frequency_domain(
             inverse_radius += weight / radius_q
         ci = element_constrained[ei]
         name = constrained_names[ci]
-        litz = litz_properties_by_conductor.get(name)
-        element_conductivity = litz.conductivity if litz is not None else conductivity
+        element_conductivity = sigma_by_conductor[name]
         elem_j[ei, name_indices[name]] = (
             element_conductivity * voltages[ci] * inverse_radius / (2.0 * np.pi)
             - sign * omega * element_conductivity * av
@@ -732,5 +743,11 @@ def average_abs_current_density(mesh: AxisymmetricMesh, density: np.ndarray, con
 
 
 def copper_loss(mesh: AxisymmetricMesh, densities: Mapping[str, np.ndarray], conductivity: float = 58e6) -> float:
-    """Return time-average copper loss for peak phasors: ``0.5 integral |J|^2/sigma``."""
-    return float(sum(0.5 * sum((2*np.pi * abs(np.linalg.det(np.array([[mesh.points[mesh.triangles[e,1],0]-mesh.points[mesh.triangles[e,0],0], mesh.points[mesh.triangles[e,2],0]-mesh.points[mesh.triangles[e,0],0]],[mesh.points[mesh.triangles[e,1],1]-mesh.points[mesh.triangles[e,0],1], mesh.points[mesh.triangles[e,2],1]-mesh.points[mesh.triangles[e,0],1]]]))) / 2) * np.mean(mesh.points[mesh.triangles[e],0]) * abs(j[e])**2 / conductivity for e in mesh.conductor_regions.get(name, [])) for name, j in densities.items()))
+    """Return solid-only peak-phasor Joule loss; use litz_loss for homogenized bundles."""
+    from .losses import element_volumes, loss_densities
+
+    components = loss_densities(
+        mesh, 0.0, current_densities=densities, conductivity=conductivity,
+        conductor_names=list(densities), include_core=False,
+    )
+    return float(np.dot(element_volumes(mesh), components.electrical))

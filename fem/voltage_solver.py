@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .frequency_solver import solve_frequency_domain
+from .litz import LitzProperties
 from .preprocess import AxisymmetricMesh
 
 
@@ -17,12 +18,20 @@ def solve_voltage_excitation(
     relative_permeability: Mapping[str, float | complex] | None = None,
     conductivity: float = 58e6,
     phasor_convention: str = "cosine",
+    litz_properties: Mapping[str, LitzProperties] | None = None,
+    conductor_conductivities: Mapping[str, complex] | None = None,
 ):
     """Solve a single-winding model from an applied terminal voltage.
 
     The current is obtained self-consistently from the solver's ring-voltage
     formulation. ``turns`` converts terminal voltage to the per-turn ring
     voltage used by the axisymmetric model.
+
+    ``conductor_conductivities`` provides complex S/m per physical conductor
+    and overrides the scalar bulk fallback; effective ``litz_properties`` take
+    precedence. These properties are used in both the unit-current calibration
+    and the voltage reconstruction before fields are scaled to the applied
+    voltage. Returns nodal A_phi, element current densities, and terminal current.
     """
     winding_names = mesh.geometry.get("conductor_windings", [])
     names = [
@@ -49,6 +58,8 @@ def solve_voltage_excitation(
         conductivity=conductivity,
         phasor_convention=phasor_convention,
         return_voltages=True,
+        litz_properties=litz_properties,
+        conductor_conductivities=conductor_conductivities,
     )
     solved_source = sum(
         voltages.get(name, 0.0j) * float(all_fractions[index])

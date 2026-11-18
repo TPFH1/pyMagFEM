@@ -24,7 +24,14 @@ def solve_nonlinear_frequency_domain(
     progress: bool = True,
     **kwargs,
 ):
-    """Solve a field-dependent frequency-domain problem by fixed-point iteration."""
+    """Iterate permeability at local flux density until the field converges.
+
+    Each nonlinear material also supplies its complex region conductivity
+    (including dielectric response), overriding static mesh data and matching
+    post-processing. Conductivity is held fixed across iterations while local
+    permeability follows the relaxed B field. Remaining ``kwargs``, including
+    per-conductor properties, are forwarded to ``solve_frequency_domain``.
+    """
     if (
         max_iterations <= 0
         or not np.isfinite(tolerance)
@@ -42,6 +49,11 @@ def solve_nonlinear_frequency_domain(
     start_time = time.perf_counter()
     if progress:
         print(f"Nonlinear solve: starting ({max_iterations} max iterations)")
+    # Keep electrical and magnetic properties from the same material model in every solve.
+    material_conductivities = dict(kwargs.pop("material_conductivities", {}) or {})
+    material_conductivities.update({
+        region: material.conductivity for region, material in nonlinear_materials.items()
+    })
     for iteration in range(max_iterations):
         iteration_start = time.perf_counter()
         relative_permeability = dict(
@@ -57,6 +69,7 @@ def solve_nonlinear_frequency_domain(
             frequency,
             currents,
             relative_permeability=relative_permeability,
+            material_conductivities=material_conductivities,
             _assembly_cache=assembly_cache,
             **kwargs,
         )

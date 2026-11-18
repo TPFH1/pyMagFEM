@@ -89,15 +89,6 @@ def meeker_litz_properties(
     )
 
 
-def _element_area(mesh: AxisymmetricMesh, element: int) -> tuple[float, float]:
-    xy = mesh.points[mesh.triangles[element]]
-    area = abs(np.linalg.det(np.array([
-        [xy[1, 0] - xy[0, 0], xy[2, 0] - xy[0, 0]],
-        [xy[1, 1] - xy[0, 1], xy[2, 1] - xy[0, 1]],
-    ]))) / 2.0
-    return area, float(np.mean(xy[:, 0]))
-
-
 def litz_loss(
     mesh: AxisymmetricMesh,
     current_densities: Mapping[str, np.ndarray],
@@ -115,6 +106,12 @@ def litz_loss(
     proximity term is obtained from ``-omega*imag(mu_eff)*|H|^2/2`` and the
     transport term from ``real(rho_eff)*|J|^2/2``. Axisymmetric volume
     integration includes the ``2*pi*r`` Jacobian.
+
+    J is averaged over the full bundle area in A/m^2; H is in A/m. Arrays
+    follow full mesh element order. ``conductivity`` is the bulk strand
+    conductivity in S/m, not the effective bundle value; Meeker's model
+    incorporates ``fill_factor`` and frequency in Hz before loss evaluation.
+    Both components use the same density evaluator as result plots and reports.
     """
     if magnetic_field.shape != (len(mesh.triangles), 2):
         raise ValueError("magnetic_field must contain one vector per element")
@@ -129,14 +126,13 @@ def litz_loss(
         fill_factor=fill_factor,
         conductivity=conductivity,
     )
-    omega = 2.0 * np.pi * frequency
-    transport = 0.0
-    proximity = 0.0
-    for element in np.asarray(mesh.conductor_regions[conductor], dtype=int):
-        area, radius = _element_area(mesh, int(element))
-        volume = 2.0 * np.pi * radius * area
-        transport += 0.5 * volume * properties.resistivity.real * abs(density[element]) ** 2
-        proximity += -0.5 * volume * omega * properties.absolute_permeability.imag * np.linalg.norm(
-            magnetic_field[element]
-        ) ** 2
+    from .losses import element_volumes, loss_densities
+
+    densities = loss_densities(
+        mesh, frequency, current_densities=current_densities, magnetic_field=magnetic_field,
+        litz_properties={conductor: properties}, conductor_names=[conductor], include_core=False,
+    )
+    volumes = element_volumes(mesh)
+    transport = np.dot(volumes, densities.electrical)
+    proximity = np.dot(volumes, densities.magnetic)
     return LitzLoss(float(transport), float(proximity))

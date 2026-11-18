@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from matplotlib.colors import LogNorm
@@ -12,13 +12,20 @@ from model.schema import FEMModel
 
 from .litz import LitzProperties
 from .losses import loss_densities
+from .materials import relative_to_absolute_permeability
 from .physics import (
     complex_relative_permeability,
     eddy_current_density,
     electric_field_from_a_phi,
+    magnetic_loss_density,
 )
 from .postprocess import magnetic_field_intensity, magnetic_flux_density
 from .preprocess import AxisymmetricMesh
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+
+    from .nonlinear import NonlinearCoreMaterial
 
 MU0 = 4e-7 * np.pi
 
@@ -36,6 +43,56 @@ class PhysicalField(str, Enum):
     LOSS_DENSITY = "loss_density"
     MAG_LOSS_DENSITY = "mag_loss_density"
     ELECTRIC_LOSS_DENSITY = "electric_loss_density"
+
+
+def plot_nonlinear_core_material(
+    material: NonlinearCoreMaterial,
+    *,
+    material_name: str | None = None,
+    b_max_t: float = 2.0,
+) -> Figure:
+    """Plot solver permeability and magnetic loss density versus peak flux density.
+
+    The figure samples the supplied material model from zero to ``b_max_t``
+    tesla at its configured frequency and temperature. It uses peak H = B/mu
+    and the same magnetic-loss density calculation as FEM post-processing.
+    Returns the figure without displaying or saving it.
+    """
+    if not np.isfinite(b_max_t) or b_max_t <= 0.0:
+        raise ValueError("b_max_t must be finite and positive")
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise RuntimeError("plot_nonlinear_core_material requires matplotlib") from exc
+
+    b_t = np.linspace(0.0, b_max_t, 1001)
+    mu_r = material.relative_permeability_at(b_t)
+    mu_h_per_m = relative_to_absolute_permeability(mu_r)
+    # A single field direction suffices because the loss function uses the norm of H.
+    h_a_per_m = np.column_stack((b_t / mu_h_per_m, np.zeros_like(b_t)))
+    p_mag_w_per_m3 = magnetic_loss_density(h_a_per_m, mu_h_per_m, material.frequency)
+
+    fig, (mu_ax, loss_ax) = plt.subplots(2, 1, sharex=True, figsize=(4, 4), layout="constrained")
+    mu_ax.plot(b_t, mu_r.real, label=r"$\mathrm{Re}(\mu_r)$")
+    mu_ax.plot(b_t, -mu_r.imag, label=r"$-\mathrm{Im}(\mu_r)$")
+    mu_ax.plot(b_t, np.abs(mu_r), "--", label=r"$|\mu_r|$")
+    mu_ax.set_ylabel("Relative permeability")
+    mu_ax.legend()
+    loss_ax.semilogy(b_t, p_mag_w_per_m3)
+    loss_ax.set(
+        ylabel=r"Magnetic loss density" + r"$p_\mathrm{mag}$ [W/m$^3$]",
+        xlabel=r"Peak flux density $|B|$ [T]",
+        xlim=(0.0, b_max_t),
+    )
+    for ax in (mu_ax, loss_ax):
+        ax.axhline(0.0, color="0.5", linewidth=0.8)
+        ax.grid(alpha=0.25)
+    name = f"{material_name} at " if material_name else ""
+    fig.suptitle(
+        "Core Model in the Nonlinear Solver\n"
+        rf"{name}{material.frequency / 1e3:g} kHz, {material.temperature:g} $^\circ$C"
+    )
+    return fig
 
 
 def plot_mesh(

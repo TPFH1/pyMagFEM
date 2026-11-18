@@ -3,6 +3,7 @@ import numpy as np
 from fem import (
     MU0,
     AxisymmetricMesh,
+    NonlinearCoreMaterial,
     absolute_to_relative_permeability,
     average_abs_current_density,
     build_mesh,
@@ -18,7 +19,9 @@ from fem import (
     magnetic_flux_density,
     magnetic_flux_density_nodal,
     magnetic_loss_density,
+    material_from_materialdatabase,
     meeker_litz_properties,
+    plot_nonlinear_core_material,
     solve_axisymmetric,
     solve_combined,
     solve_frequency_domain,
@@ -54,6 +57,49 @@ def _mesh():
         {"radius_cond_1": 1.0, "p_cond_center_1": [[1.5, 0.5]]},
         {"conductor_0": np.arange(4)},
     )
+
+
+def test_materialdatabase_saturation_matches_magnitude_slope_and_keeps_loss_angle():
+    class PermeabilityFit:
+        def fit_real_and_imaginary_part_at_f_and_T(self, frequency, temperature, b_grid):
+            return np.array([50.0, 2000.0, 250.0, 150.0, 500.0]), np.array([1., 8., 4., 8., 20.])
+
+    material = material_from_materialdatabase(
+        PermeabilityFit(), None, frequency=100e3, temperature=90.0,
+        b_min=0.125, b_max=2.0, b_points=5,
+    )
+    # The low-field value is below 10% of the future peak, but is not saturated.
+    # After the peak, the fit crosses 200 at 0.75 T and later rebounds.
+    cutoff_b = 0.75
+    cutoff_mu = 200.0 - 6.0j
+    np.testing.assert_allclose(
+        material.relative_permeability_at(np.array([0.125, 0.625, cutoff_b])),
+        np.array([50.0 - 1.0j, 225.0 - 5.0j, cutoff_mu]),
+    )
+    step_t = 1e-5
+    magnitudes = np.abs(material.relative_permeability_at(
+        np.array([cutoff_b - step_t, cutoff_b, cutoff_b + step_t]),
+    ))
+    slopes = np.diff(magnitudes) / step_t
+    assert slopes[0] < 0.0
+    np.testing.assert_allclose(slopes[1], slopes[0], rtol=1e-4)
+
+    # The tail ignores the rebound, decays towards unit magnitude and keeps its phase.
+    tail = material.relative_permeability_at(np.array([cutoff_b, 0.875, 2.0, 1000.0]))
+    assert np.all(np.diff(np.abs(tail)) < 0.0)
+    np.testing.assert_allclose(tail / np.abs(tail), cutoff_mu / abs(cutoff_mu))
+    np.testing.assert_allclose(tail[-1], cutoff_mu / abs(cutoff_mu))
+    assert tail[-1].real < 1.0
+
+    # At 12.5% of the same peak, the tail starts earlier at the 0.5 T sample.
+    material = material_from_materialdatabase(
+        PermeabilityFit(), None, frequency=100e3, temperature=90.0,
+        b_min=0.125, b_max=2.0, b_points=5, relative_peak_mu_real=0.125,
+    )
+    below, cutoff, above = material.relative_permeability_at(np.array([0.25, 0.5, 0.625]))
+    np.testing.assert_allclose([below, cutoff], [2000.0 - 8.0j, 250.0 - 4.0j])
+    assert abs(above) < abs(cutoff)
+    np.testing.assert_allclose(above / abs(above), cutoff / abs(cutoff))
 
 
 def test_operating_point_uses_nonlinear_material_for_core_loss_only_when_requested(
@@ -519,6 +565,26 @@ def test_result_plot_uses_local_nonlinear_permeability_components():
             np.testing.assert_allclose(values[core_elements], expected_values)
             if field is not PhysicalField.MU:
                 np.testing.assert_allclose(interpolation_inputs[-1], local_b[core_elements])
+
+
+def test_plot_nonlinear_core_material_shows_permeability_and_magnetic_loss():
+    import matplotlib.pyplot as plt
+
+    material = NonlinearCoreMaterial(lambda b: 2.0 + b - 1j, 0j, 90.0, 1000.0)
+    fig = plot_nonlinear_core_material(material, b_max_t=1.0)
+    try:
+        mu_ax, loss_ax = fig.axes
+        b = mu_ax.lines[0].get_xdata()
+        assert b[0] == 0.0 and b[-1] == 1.0
+        np.testing.assert_allclose(mu_ax.lines[0].get_ydata(), 2.0 + b)
+        np.testing.assert_allclose(mu_ax.lines[1].get_ydata(), 1.0)
+        np.testing.assert_allclose(mu_ax.lines[2].get_ydata(), np.hypot(2.0 + b, 1.0))
+        np.testing.assert_allclose(
+            loss_ax.lines[0].get_ydata(),
+            np.pi * material.frequency * b**2 / (MU0 * ((2.0 + b)**2 + 1.0)),
+        )
+    finally:
+        plt.close(fig)
 
 
 def test_plot_permeability_components_use_b_for_model_overrides():

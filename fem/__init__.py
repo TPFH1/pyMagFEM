@@ -32,7 +32,13 @@ from .physics import (
                           magnetic_loss_density,
                           total_litz_loss_density,
 )
-from .plot import PhysicalField, plot_mesh, plot_physical_field, plot_winding_scheme
+from .plot import (
+    PhysicalField,
+    plot_mesh,
+    plot_nonlinear_core_material,
+    plot_physical_field,
+    plot_winding_scheme,
+)
 from .postprocess import (
                           TransformerEquivalent,
                           WindingLosses,
@@ -117,6 +123,7 @@ __all__ = [
                           "meeker_litz_properties",
                           "mesh_from_json",
                           "plot_mesh",
+                          "plot_nonlinear_core_material",
                           "plot_physical_field",
                           "plot_winding_scheme",
                           "relative_to_absolute_permeability",

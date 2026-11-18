@@ -168,6 +168,12 @@ angle. An explicit `relative_permeability_model` overrides the material model.
 The convention is `mu_r = mu_r_real - j * mu_r_loss`, so lossy materials have
 negative `MU_IMAG` values; use the default linear colour scale for that field.
 
+To inspect the exact nonlinear material model before solving, use
+`fig = fem.plot_nonlinear_core_material(material, material_name="DMR96A")`.
+The figure shows the real, negative imaginary, and magnitude curves above
+magnetic loss density. It defaults to 0–2 T; set `b_max_t` to change the range.
+The caller can display the figure or save it with `fig.savefig(...)`.
+
 All three loss plots use the same elementwise decomposition for linear and
 nonlinear cores, solid conductors, and Litz bundles:
 

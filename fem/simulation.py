@@ -417,8 +417,8 @@ class FrequencyDomainResult:
         currents = self._currents()
         if not currents:
             raise ValueError("at least one excitation current is required")
-        current = next(iter(currents.values()))
-        if current == 0:
+        current = next((value for value in currents.values() if value != 0), None)
+        if current is None:
             raise ValueError("excitation current must be non-zero")
         return complex(current)
 

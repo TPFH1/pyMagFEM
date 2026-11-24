@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fem import (
     MU0,
@@ -1042,6 +1043,38 @@ def test_winding_terminal_voltage_and_complex_power_for_parallel_paths(monkeypat
     assert winding_complex_powers(terminal_voltages, {"secondary": 3.0 + 1.0j}) == {
         "secondary": 10.5 - 3.5j,
     }
+
+
+@pytest.mark.parametrize(
+    "currents",
+    [
+        {"primary": 2.0, "secondary": 0.0},
+        {"secondary": 0.0, "primary": 2.0},
+        {"primary": 0.0, "secondary": 2.0},
+        {"secondary": 2.0, "primary": 0.0},
+    ],
+)
+def test_terminal_voltages_allow_an_open_winding_in_either_circuit_order(currents):
+    from fem import FrequencyDomainResult
+
+    mesh = _mesh()
+    mesh.geometry["conductor_windings"] = ["secondary"]
+    component = FEMModel(windings=[
+        Winding("primary", circuit="primary"),
+        Winding("secondary", circuit="secondary"),
+    ])
+    component.excitation.circuits = currents
+    result = FrequencyDomainResult.from_solution(
+        component, mesh, np.zeros(5, dtype=complex),
+        {"conductor_0": np.ones(4, dtype=complex)},
+    )
+
+    voltage = result.winding_terminal_voltages()["secondary"]
+    assert np.isfinite(voltage)
+    assert voltage != 0
+    assert result.winding_complex_powers()["secondary"] == pytest.approx(
+        0.5 * voltage * currents["secondary"]
+    )
 
 
 def test_litz_conductor_derives_fill_factor_from_strands():
